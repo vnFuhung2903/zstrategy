@@ -104,16 +104,12 @@ contract CommitmentRegistry is ReentrancyGuard {
         CommitmentKind kind
     );
     event VerifierSet(uint8 indexed kind, address indexed verifier);
-    /// @notice Audit trail for fill events (Path B1 threshold-keeper).
-    ///         `executor` is `msg.sender` — the keeper EOA (or user wallet, for
-    ///         self-execution) that submitted this fill. Indexed so observers
-    ///         can filter "show all fills by keeper-X" via standard event logs.
     event CommitmentExecuted(
         bytes32        indexed commitmentHash,
         address        indexed owner,
         address        indexed executor,
         bytes32        nullifier,
-        uint64         fillRef,   // oracle price for ORDER_FILL; block.timestamp for DCA
+        uint64         fillRef,
         uint256        amountOut,
         CommitmentKind kind
     );
@@ -223,6 +219,9 @@ contract CommitmentRegistry is ReentrancyGuard {
         require(sizes.length    == n,      "Registry: sizes length mismatch");
         require(minOuts.length  == n,      "Registry: minOuts length mismatch");
         require(expiries.length == n,      "Registry: expiries length mismatch");
+        require(tokenIn  != address(0),    "Registry: zero tokenIn");
+        require(tokenOut != address(0),    "Registry: zero tokenOut");
+        require(tokenIn  != tokenOut,      "Registry: same token");
         require(
             address(verifiers[uint8(kind)]) != address(0),
             "Registry: verifier not set for kind"
