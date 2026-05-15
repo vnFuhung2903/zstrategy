@@ -2455,8 +2455,8 @@ abstract contract BaseZKHonkVerifier is IVerifier {
 }
 
 // Renamed from bb's default `HonkVerifier`. If you regenerate via
-// `bb write_solidity` you'll need to re-apply this rename
-contract ZKVerifier is BaseZKHonkVerifier(N, LOG_N, VK_HASH, NUMBER_OF_PUBLIC_INPUTS) {
+// `bb write_solidity` you'll need to re-apply this rename.
+contract OrderFillVerifier is BaseZKHonkVerifier(N, LOG_N, VK_HASH, NUMBER_OF_PUBLIC_INPUTS) {
      function loadVerificationKey() internal pure override returns (Honk.VerificationKey memory) {
        return HonkVerificationKey.loadVerificationKey();
     }

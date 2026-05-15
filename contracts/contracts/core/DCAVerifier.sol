@@ -2454,8 +2454,8 @@ abstract contract BaseZKHonkVerifier is IVerifier {
     function loadVerificationKey() internal pure virtual returns (Honk.VerificationKey memory);
 }
 
-// Renamed from bb's default `HonkVerifier`. See ZKVerifier.sol for the
-// rationale. If you regenerate via `bb write_solidity` re-apply this rename.
+// Renamed from bb's default `HonkVerifier`. If you regenerate via
+// `bb write_solidity` you'll need to re-apply this rename.
 contract DCAVerifier is BaseZKHonkVerifier(N, LOG_N, VK_HASH, NUMBER_OF_PUBLIC_INPUTS) {
      function loadVerificationKey() internal pure override returns (Honk.VerificationKey memory) {
        return HonkVerificationKey.loadVerificationKey();

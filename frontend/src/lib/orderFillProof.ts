@@ -96,7 +96,7 @@ export async function generateOrderFillProof(inputs: OrderFillWitness): Promise<
 
   const { witness } = await noir.execute(witnessInputs);
   // `keccak: true` selects the EVM-compatible Honk transcript that matches
-  // ZKVerifier.sol generated via `bb write_solidity --oracle_hash keccak`.
+  // OrderFillVerifier.sol generated via `bb write_solidity --oracle_hash keccak`.
   const { proof } = (await backend.generateProof(witness, { keccak: true })) as { proof: Uint8Array };
 
   let hex = "";

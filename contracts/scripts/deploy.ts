@@ -17,7 +17,7 @@
  *     frontend (`NEXT_PUBLIC_*` vars) and keeper (`*_ADDRESS` vars) to consume.
  *
  * Env overrides (all optional):
- *   ZK_VERIFIER_ADDRESS     — reuse an existing ORDER_FILL verifier
+ *   ORDER_FILL_VERIFIER_ADDRESS — reuse an existing ORDER_FILL verifier
  *   DCA_VERIFIER_ADDRESS    — reuse an existing DCA verifier
  *   DEX_ADAPTER_ADDRESS     — reuse an existing IDEXAdapter
  *   ETH_USD_FEED_ADDRESS    — reuse an existing Chainlink-compatible feed
@@ -38,7 +38,7 @@ interface Deployment {
   chainId:            number;
   deployer:           string;
   guardian:           string;
-  zkVerifier:         string;
+  orderFillVerifier:  string;
   dcaVerifier:        string;
   collateralVault:    string;
   commitmentRegistry: string;
@@ -94,15 +94,15 @@ async function main() {
   // inlined by solc, so no linking is needed for them.
   //
   // If you regenerate the verifier files via `bb write_solidity`, re-apply
-  // the contract rename (see ZKVerifier.sol top comment) and verify the
+  // the contract rename (see OrderFillVerifier.sol top comment) and verify the
   // library name is still `ZKTranscriptLib`.
-  const zkVerifier = await deployIfMissing(process.env.ZK_VERIFIER_ADDRESS, "ZKVerifier", async () => {
+  const orderFillVerifier = await deployIfMissing(process.env.ORDER_FILL_VERIFIER_ADDRESS, "OrderFillVerifier", async () => {
     const LibF = await ethers.getContractFactory(
-      "contracts/core/ZKVerifier.sol:ZKTranscriptLib"
+      "contracts/core/OrderFillVerifier.sol:ZKTranscriptLib"
     );
     const lib = await LibF.deploy();
     await lib.waitForDeployment();
-    const VerifierF = await ethers.getContractFactory("ZKVerifier", {
+    const VerifierF = await ethers.getContractFactory("OrderFillVerifier", {
       libraries: { ZKTranscriptLib: await lib.getAddress() },
     });
     const c = await VerifierF.deploy();
@@ -153,7 +153,7 @@ async function main() {
   console.log(`  CollateralVault      ${vaultAddr}  (deployed)`);
 
   const RegistryF = await ethers.getContractFactory("CommitmentRegistry");
-  const registry = await RegistryF.deploy(zkVerifier, vaultAddr, dexAdapter, guardian);
+  const registry = await RegistryF.deploy(orderFillVerifier, vaultAddr, dexAdapter, guardian);
   await registry.waitForDeployment();
   const registryAddr = await registry.getAddress();
   console.log(`  CommitmentRegistry   ${registryAddr}  (deployed)`);
@@ -201,7 +201,7 @@ async function main() {
     chainId,
     deployer:           deployer.address,
     guardian,
-    zkVerifier,
+    orderFillVerifier,
     dcaVerifier,
     collateralVault:    vaultAddr,
     commitmentRegistry: registryAddr,

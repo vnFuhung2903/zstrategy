@@ -62,7 +62,7 @@ After `nargo compile`, generate the on-chain verifier:
 ```sh
 cd circuits/order_fill
 bb write_vk -b ./target/order_fill.json -o ./target --oracle_hash keccak
-bb write_solidity_verifier -k ./target/vk -o ../../contracts/contracts/core/ZKVerifier.sol
+bb write_solidity_verifier -k ./target/vk -o ../../contracts/contracts/core/OrderFillVerifier.sol
 ```
 
-The `--oracle_hash keccak` flag produces an EVM-optimized verifier. Once generated, swap `MockZKVerifier` for `ZKVerifier` in the contract deployment script.
+The `--oracle_hash keccak` flag produces an EVM-optimized verifier. Once generated, swap `MockZKVerifier` for `OrderFillVerifier` in the contract deployment script.

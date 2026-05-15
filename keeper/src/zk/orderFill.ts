@@ -89,7 +89,7 @@ export async function generateOrderFillProof(
   // `keccak: true` selects the EVM-compatible Honk transcript hash. If the
   // bb.js version doesn't accept this option (e.g. older releases use
   // `UltraKeccakHonkBackend` instead), bump bb.js to ≥ 0.99 to match how the
-  // ZKVerifier.sol was generated.
+  // OrderFillVerifier.sol was generated.
   const { proof } = await backend.generateProof(witness, { keccak: true });
 
   return ("0x" + bytesToHex(proof)) as `0x${string}`;

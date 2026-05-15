@@ -9,6 +9,8 @@ contracts/
   core/
     CommitmentRegistry.sol   # register / execute / cancel / sweep, Chainlink read at fill time
     CollateralVault.sol      # ERC-20 collateral, registry-only mutators
+    OrderFillVerifier.sol    # UltraHonk verifier for ORDER_FILL circuit (bb-generated)
+    DCAVerifier.sol          # UltraHonk verifier for DCA circuit (bb-generated)
   adapters/
     UniswapV3Adapter.sol     # exactInputSingle wrapper, lazy forceApprove, configurable swap-deadline buffer
     MockDEXAdapter.sol       # configurable swap result for tests / testnets without UniV3
