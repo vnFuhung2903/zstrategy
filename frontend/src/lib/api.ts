@@ -1,4 +1,5 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+const DEFAULT_CHAIN_ID = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID ?? "421614");
 
 export interface Statistics {
   chain_id:         number;
@@ -46,11 +47,11 @@ async function fetchJson(path: string): Promise<any> {
 }
 
 export const api = {
-  stats: async (chainId = 421614): Promise<Statistics> => {
+  stats: async (chainId = DEFAULT_CHAIN_ID): Promise<Statistics> => {
     const json = await fetchJson(`/api/v1/stats?chain_id=${chainId}`);
     return json.data as Statistics;
   },
-  executions: async (chainId = 421614, limit = 20, offset = 0):
+  executions: async (chainId = DEFAULT_CHAIN_ID, limit = 20, offset = 0):
       Promise<{ data: ExecutionRecord[]; limit: number; offset: number }> => {
     return await fetchJson(`/api/v1/executions?chain_id=${chainId}&limit=${limit}&offset=${offset}`);
   },
