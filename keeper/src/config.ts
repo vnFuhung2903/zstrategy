@@ -43,7 +43,7 @@ export const config = {
   circuitJsonPath:          optional("CIRCUIT_JSON_PATH",     "../circuits/order_fill/target/order_fill.json"),
   dcaCircuitJsonPath:       optional("DCA_CIRCUIT_JSON_PATH", "../circuits/dca/target/dca.json"),
 
-  // ── Threshold keeper (Path B1) ────────────────────────────────────────────
+  // ── Threshold keeper ────────────────────────────────────────────
   // Number of keeper "nodes" simulated in this process (prototype). When the
   // network goes multi-process, this becomes 1 per process and the count is
   // taken from a shared registry. Threshold k must be ≤ N.

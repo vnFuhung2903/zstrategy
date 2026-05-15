@@ -1,5 +1,5 @@
 /**
- * Keeper-network keypair management (Path B1, in-process simulation).
+ * Keeper-network keypair management.
  *
  * In the single-process simulation this module owns N secp256k1 keypairs —
  * one per simulated keeper node. Frontend ECIES-encrypts each Shamir share

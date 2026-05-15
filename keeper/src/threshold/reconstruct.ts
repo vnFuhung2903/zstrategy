@@ -1,5 +1,5 @@
 /**
- * Threshold reconstruction at fill time (Path B1).
+ * Threshold reconstruction at fill time.
  *
  * Reads `k` encrypted shares from the keeper's local DB, decrypts each with
  * the matching private key (from the in-process keyset), and runs Shamir

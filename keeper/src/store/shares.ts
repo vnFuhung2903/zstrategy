@@ -1,5 +1,5 @@
 /**
- * Encrypted-share storage (Path B1).
+ * Encrypted-share storage.
  *
  * Each row holds ONE keeper's ECIES-encrypted Shamir share for ONE
  * commitment. Reconstruction reads up to N rows and decrypts k of them

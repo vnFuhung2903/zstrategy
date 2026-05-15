@@ -1,5 +1,5 @@
 /**
- * Threshold-keeper share distribution (Path B1).
+ * Threshold-keeper share distribution.
  *
  * `user_secret` (32 random bytes derived from the wallet signature) is split
  * into N Shamir shares with reconstruction threshold k. Each share is
@@ -19,8 +19,8 @@ import { encrypt as eciesEncrypt } from "eciesjs";
 import { split as shamirSplit } from "shamir-secret-sharing";
 import { hexToBytes, bytesToHex } from "viem";
 
-export const SHAMIR_THRESHOLD_K = 3;
-export const SHAMIR_NODES_N = 5;
+export const SHAMIR_THRESHOLD_K = parseInt(process.env.NEXT_PUBLIC_SHAMIR_K ?? "2");
+export const SHAMIR_NODES_N     = parseInt(process.env.NEXT_PUBLIC_SHAMIR_N ?? "3");
 
 export interface KeeperPubkey {
   /** Stable identifier for the keeper, e.g. "keeper-0" or its operator address. */

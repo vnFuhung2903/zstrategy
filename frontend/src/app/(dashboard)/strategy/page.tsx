@@ -174,7 +174,7 @@ export default function StrategyPage() {
       });
 
       // 3. Shamir-split user_secret into N encrypted shares — one per keeper.
-      //    Path B1: no single keeper sees the secret in storage; reconstruction
+      //    No single keeper sees the secret in storage; reconstruction
       //    requires k of N to cooperate at fill time.
       const encryptedShares = await splitAndEncryptSecret(userSecret, keepers);
 
