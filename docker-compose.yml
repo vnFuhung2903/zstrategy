@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zstrategy
+      POSTGRES_PASSWORD: zstrategy
+      POSTGRES_DB: zstrategy
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zstrategy"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://zstrategy:zstrategy@postgres:5432/zstrategy?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RPC_URL: ${RPC_URL}
+      CHAIN_ID: ${CHAIN_ID:-421614}
+      COMMITMENT_REGISTRY_ADDRESS: ${COMMITMENT_REGISTRY_ADDRESS}
+      KEEPER_URL: http://keeper:3001
+      KEEPER_API_SECRET: ${API_SECRET}
+      CHAINLINK_ETH_USD: ${CHAINLINK_ETH_USD}
+      METRICS_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  keeper:
+    build:
+      context: ./keeper
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      RPC_URL: ${RPC_URL}
+      CHAIN_ID: ${CHAIN_ID:-421614}
+      KEEPER_PRIVATE_KEY: ${KEEPER_PRIVATE_KEY}
+      COMMITMENT_REGISTRY_ADDRESS: ${COMMITMENT_REGISTRY_ADDRESS}
+      COLLATERAL_VAULT_ADDRESS: ${COLLATERAL_VAULT_ADDRESS}
+      CHAINLINK_ETH_USD: ${CHAINLINK_ETH_USD}
+      API_PORT: "3001"
+      API_SECRET: ${API_SECRET}
+      BACKEND_URL: http://backend:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
