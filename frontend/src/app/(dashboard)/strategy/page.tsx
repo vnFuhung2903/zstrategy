@@ -220,7 +220,7 @@ export default function StrategyPage() {
 
       // 6. On-chain registration. msg.sender = wallet, so cancel + self-execute
       //    paths work without keeper involvement.
-      register(commitmentHash, tokenIn.address, tokenOut.address, amountBig, minOutBig, expiry);
+      register(commitmentHash, tokenIn.address, tokenOut.address, amountBig, minOutBig, expiry, 0);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setSubmitError(msg);
