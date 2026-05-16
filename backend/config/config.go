@@ -26,7 +26,6 @@ type Config struct {
 	CommitmentRegistryAddress string
 	KeeperURL                 string
 	KeeperAPISecret           string
-	ChainlinkFeedAddress      string
 	MetricsEnabled            bool
 }
 
@@ -47,7 +46,6 @@ func Load() (*Config, error) {
 		CommitmentRegistryAddress: getEnv("COMMITMENT_REGISTRY_ADDRESS", ""),
 		KeeperURL:                 getEnv("KEEPER_URL", "http://localhost:3001"),
 		KeeperAPISecret:           getEnv("KEEPER_API_SECRET", ""),
-		ChainlinkFeedAddress:      getEnv("CHAINLINK_ETH_USD", ""),
 		MetricsEnabled:            getEnv("METRICS_ENABLED", "true") == "true",
 	}, nil
 }

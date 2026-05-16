@@ -19,7 +19,14 @@ import (
 	"github.com/zstrategy/backend/internal/domain"
 )
 
-const chainlinkABI = `[{"name":"latestRoundData","type":"function","inputs":[],"outputs":[{"name":"roundId","type":"uint80"},{"name":"answer","type":"int256"},{"name":"startedAt","type":"uint256"},{"name":"updatedAt","type":"uint256"},{"name":"answeredInRound","type":"uint80"}]}]`
+// registryPriceFeedABI exposes CommitmentRegistry.priceFeeds(address) → address.
+const registryPriceFeedABI = `[{"name":"priceFeeds","type":"function","inputs":[{"name":"token","type":"address"}],"outputs":[{"name":"","type":"address"}]}]`
+
+// chainlinkAggregatorABI covers latestRoundData() and decimals() on any Chainlink feed.
+const chainlinkAggregatorABI = `[
+  {"name":"latestRoundData","type":"function","inputs":[],"outputs":[{"name":"roundId","type":"uint80"},{"name":"answer","type":"int256"},{"name":"startedAt","type":"uint256"},{"name":"updatedAt","type":"uint256"},{"name":"answeredInRound","type":"uint80"}]},
+  {"name":"decimals","type":"function","inputs":[],"outputs":[{"name":"","type":"uint8"}]}
+]`
 
 const (
 	monitorTickInterval = 30 * time.Second
@@ -52,14 +59,15 @@ type executeRequest struct {
 type MonitorService struct {
 	repo            domain.StrategyRepository
 	ethClient       *ethclient.Client
-	feedAddr        common.Address
-	hasFeed         bool
-	parsedABI       abi.ABI
+	registryAddr    common.Address
+	hasRegistry     bool
+	regABI          abi.ABI // priceFeeds(address)
+	feedABI         abi.ABI // latestRoundData() + decimals()
 	keeperURL       string
 	keeperAPISecret string
 	httpClient      *http.Client
 
-	mu       sync.Mutex
+	mu        sync.Mutex
 	stopChans map[string]context.CancelFunc
 
 	// rootCtx is the long-lived context goroutines should be derived from. It
@@ -73,25 +81,28 @@ type MonitorService struct {
 func NewMonitorService(
 	repo domain.StrategyRepository,
 	ethClient *ethclient.Client,
-	feedAddress string,
+	registryAddress string,
 	keeperURL string,
 	keeperAPISecret string,
 ) *MonitorService {
-	parsed, _ := abi.JSON(strings.NewReader(chainlinkABI))
-	hasFeed := feedAddress != "" && ethClient != nil
+	regABI, _  := abi.JSON(strings.NewReader(registryPriceFeedABI))
+	feedABI, _ := abi.JSON(strings.NewReader(chainlinkAggregatorABI))
+
+	hasRegistry := registryAddress != "" && ethClient != nil
 	var addr common.Address
-	if hasFeed {
-		addr = common.HexToAddress(feedAddress)
+	if hasRegistry {
+		addr = common.HexToAddress(registryAddress)
 	}
-	if !hasFeed {
-		log.Println("[Monitor] CHAINLINK_ETH_USD not configured — ORDER_FILL monitoring disabled")
+	if !hasRegistry {
+		log.Println("[Monitor] COMMITMENT_REGISTRY_ADDRESS not configured — ORDER_FILL monitoring disabled")
 	}
 	return &MonitorService{
 		repo:            repo,
 		ethClient:       ethClient,
-		feedAddr:        addr,
-		hasFeed:         hasFeed,
-		parsedABI:       parsed,
+		registryAddr:    addr,
+		hasRegistry:     hasRegistry,
+		regABI:          regABI,
+		feedABI:         feedABI,
 		keeperURL:       keeperURL,
 		keeperAPISecret: keeperAPISecret,
 		httpClient:      &http.Client{Timeout: 10 * time.Second},
@@ -268,14 +279,14 @@ func (m *MonitorService) isFillConditionMet(ctx context.Context, s *domain.Pendi
 		return now >= *s.ScheduledLo && now <= *s.ScheduledHi, nil
 	}
 
-	// ORDER_FILL: needs Chainlink price.
-	if !m.hasFeed {
+	// ORDER_FILL: derive pair price from two registry-registered Chainlink feeds.
+	if !m.hasRegistry {
 		return false, nil
 	}
 
-	oraclePrice, err := m.fetchChainlinkPrice(ctx)
+	oraclePrice, err := m.fetchPairPrice(ctx, s.TokenIn, s.TokenOut)
 	if err != nil {
-		return false, fmt.Errorf("chainlink fetch: %w", err)
+		return false, fmt.Errorf("pair price: %w", err)
 	}
 
 	limitPrice := new(big.Int)
@@ -290,38 +301,116 @@ func (m *MonitorService) isFillConditionMet(ctx context.Context, s *domain.Pendi
 	return oraclePrice.Cmp(limitPrice) <= 0, nil
 }
 
-func (m *MonitorService) fetchChainlinkPrice(ctx context.Context) (*big.Int, error) {
-	packed, err := m.parsedABI.Pack("latestRoundData")
+// fetchPairPrice mirrors CommitmentRegistry._readOraclePrice:
+//
+//	normIn  = answerIn  * 10^(18 - dIn)
+//	normOut = answerOut * 10^(18 - dOut)
+//	priceU  = normIn * 10^dOut / normOut   (dOut decimal places)
+func (m *MonitorService) fetchPairPrice(ctx context.Context, tokenIn, tokenOut string) (*big.Int, error) {
+	addrIn  := common.HexToAddress(tokenIn)
+	addrOut := common.HexToAddress(tokenOut)
+
+	feedInAddr, err := m.callRegistryPriceFeed(ctx, addrIn)
 	if err != nil {
-		return nil, fmt.Errorf("pack call: %w", err)
+		return nil, fmt.Errorf("priceFeeds(tokenIn): %w", err)
+	}
+	if feedInAddr == (common.Address{}) {
+		return nil, fmt.Errorf("no USD feed configured for tokenIn %s", tokenIn)
 	}
 
-	msg := ethereum.CallMsg{
-		To:   &m.feedAddr,
-		Data: packed,
-	}
-
-	result, err := m.ethClient.CallContract(ctx, msg, nil)
+	feedOutAddr, err := m.callRegistryPriceFeed(ctx, addrOut)
 	if err != nil {
-		return nil, fmt.Errorf("call contract: %w", err)
+		return nil, fmt.Errorf("priceFeeds(tokenOut): %w", err)
+	}
+	if feedOutAddr == (common.Address{}) {
+		return nil, fmt.Errorf("no USD feed configured for tokenOut %s", tokenOut)
 	}
 
-	out, err := m.parsedABI.Unpack("latestRoundData", result)
+	answerIn, dIn, err := m.callChainlinkFeed(ctx, feedInAddr)
 	if err != nil {
-		return nil, fmt.Errorf("unpack result: %w", err)
-	}
-	if len(out) < 2 {
-		return nil, fmt.Errorf("unexpected output length: %d", len(out))
+		return nil, fmt.Errorf("tokenIn feed: %w", err)
 	}
 
-	answer, ok := out[1].(*big.Int)
+	answerOut, dOut, err := m.callChainlinkFeed(ctx, feedOutAddr)
+	if err != nil {
+		return nil, fmt.Errorf("tokenOut feed: %w", err)
+	}
+
+	ten := big.NewInt(10)
+	normIn  := new(big.Int).Mul(answerIn,  new(big.Int).Exp(ten, big.NewInt(int64(18-dIn)),  nil))
+	normOut := new(big.Int).Mul(answerOut, new(big.Int).Exp(ten, big.NewInt(int64(18-dOut)), nil))
+	priceU  := new(big.Int).Div(
+		new(big.Int).Mul(normIn, new(big.Int).Exp(ten, big.NewInt(int64(dOut)), nil)),
+		normOut,
+	)
+
+	if priceU.Sign() <= 0 {
+		return nil, fmt.Errorf("derived pair price is zero")
+	}
+	return priceU, nil
+}
+
+func (m *MonitorService) callRegistryPriceFeed(ctx context.Context, token common.Address) (common.Address, error) {
+	packed, err := m.regABI.Pack("priceFeeds", token)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("pack: %w", err)
+	}
+
+	result, err := m.ethClient.CallContract(ctx, ethereum.CallMsg{To: &m.registryAddr, Data: packed}, nil)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("call: %w", err)
+	}
+
+	out, err := m.regABI.Unpack("priceFeeds", result)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("unpack: %w", err)
+	}
+
+	addr, ok := out[0].(common.Address)
 	if !ok {
-		return nil, fmt.Errorf("unexpected answer type")
+		return common.Address{}, fmt.Errorf("unexpected return type")
 	}
-	if answer.Sign() <= 0 {
-		return nil, fmt.Errorf("non-positive oracle price")
+	return addr, nil
+}
+
+func (m *MonitorService) callChainlinkFeed(ctx context.Context, feedAddr common.Address) (answer *big.Int, decimals uint8, err error) {
+	// latestRoundData
+	packed, err := m.feedABI.Pack("latestRoundData")
+	if err != nil {
+		return nil, 0, fmt.Errorf("pack latestRoundData: %w", err)
 	}
-	return answer, nil
+	result, err := m.ethClient.CallContract(ctx, ethereum.CallMsg{To: &feedAddr, Data: packed}, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("call latestRoundData: %w", err)
+	}
+	out, err := m.feedABI.Unpack("latestRoundData", result)
+	if err != nil {
+		return nil, 0, fmt.Errorf("unpack latestRoundData: %w", err)
+	}
+	ans, ok := out[1].(*big.Int)
+	if !ok || ans.Sign() <= 0 {
+		return nil, 0, fmt.Errorf("non-positive oracle price from feed %s", feedAddr)
+	}
+
+	// decimals
+	packed, err = m.feedABI.Pack("decimals")
+	if err != nil {
+		return nil, 0, fmt.Errorf("pack decimals: %w", err)
+	}
+	result, err = m.ethClient.CallContract(ctx, ethereum.CallMsg{To: &feedAddr, Data: packed}, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("call decimals: %w", err)
+	}
+	out, err = m.feedABI.Unpack("decimals", result)
+	if err != nil {
+		return nil, 0, fmt.Errorf("unpack decimals: %w", err)
+	}
+	dec, ok := out[0].(uint8)
+	if !ok {
+		return nil, 0, fmt.Errorf("unexpected decimals type from feed %s", feedAddr)
+	}
+
+	return ans, dec, nil
 }
 
 func (m *MonitorService) triggerKeeper(s *domain.PendingStrategy) {

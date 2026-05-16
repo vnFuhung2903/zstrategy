@@ -66,7 +66,7 @@ func main() {
 	}
 
 	// ── Monitor service ───────────────────────────────────────────────────────
-	monitorSvc := service.NewMonitorService(strategyRepo, ethClient, cfg.ChainlinkFeedAddress, cfg.KeeperURL, cfg.KeeperAPISecret)
+	monitorSvc := service.NewMonitorService(strategyRepo, ethClient, cfg.CommitmentRegistryAddress, cfg.KeeperURL, cfg.KeeperAPISecret)
 	indexerSvc.Monitor = monitorSvc
 
 	// ── Root context ──────────────────────────────────────────────────────────
