@@ -31,7 +31,6 @@ process.env.CHAIN_ID                    = "31337";
 process.env.KEEPER_PRIVATE_KEY          = "0x" + "11".repeat(32);
 process.env.COMMITMENT_REGISTRY_ADDRESS = "0x" + "22".repeat(20);
 process.env.COLLATERAL_VAULT_ADDRESS    = "0x" + "33".repeat(20);
-process.env.CHAINLINK_ETH_USD           = "0x" + "44".repeat(20);
 process.env.API_SECRET                  = "test-only-secret";
 process.env.DB_PATH                     = path.join(TMP, "keeper.db");
 process.env.THRESHOLD_KEYS_FILE         = path.join(TMP, "keeper-keys.json");

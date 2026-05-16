@@ -66,9 +66,8 @@ npm install
 RPC_URL=https://...
 CHAIN_ID=421614
 KEEPER_PRIVATE_KEY=0x...                  # signs executeCommitment txs
-COMMITMENT_REGISTRY_ADDRESS=0x...
+COMMITMENT_REGISTRY_ADDRESS=0x...          # also used to look up priceFeeds for oracle re-verify
 COLLATERAL_VAULT_ADDRESS=0x...
-CHAINLINK_ETH_USD=0x...                    # used only at re-verify time on /api/execute
 
 API_PORT=3001
 API_SECRET=...                             # bearer for /api/shares, /api/execute, DELETE

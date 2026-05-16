@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { registryWriter } from "../chain/contracts";
-import { ethUsdOracle } from "../chain/oracle";
+import { fetchPairPrice } from "../chain/oracle";
 import { config } from "../config";
 import { ExecuteRequest } from "../types";
 import { generateOrderFillProof } from "../zk/orderFill";
@@ -72,7 +72,8 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
         );
       } else {
         // ORDER_FILL: contract reads Chainlink at execution; proof must match.
-        const oracle = await ethUsdOracle.fetchPrice();
+        // Derive the pair price from two registry feeds — same formula as _readOraclePrice.
+        const pairPrice = await fetchPairPrice(req.tokenIn, req.tokenOut);
         proof = await generateOrderFillProof(
           {
             price:          req.limitPrice,
@@ -80,7 +81,7 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
             nonce:          req.nonce as `0x${string}`,
             userSecret:     req.userSecret as `0x${string}`,
             commitmentHash: req.commitmentHash as `0x${string}`,
-            oraclePrice:    oracle.price,
+            oraclePrice:    pairPrice,
             nullifier:      req.nullifier as `0x${string}`,
             tokenIn:        req.tokenIn  as `0x${string}`,
             tokenOut:       req.tokenOut as `0x${string}`,

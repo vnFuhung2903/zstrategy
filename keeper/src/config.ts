@@ -19,8 +19,6 @@ export const config = {
   registryAddress:          required("COMMITMENT_REGISTRY_ADDRESS"),
   vaultAddress:             required("COLLATERAL_VAULT_ADDRESS"),
 
-  chainlinkEthUsd:          required("CHAINLINK_ETH_USD"),
-
   maxRetries:               parseInt(optional("MAX_RETRIES", "5")),
   retryBaseDelayMs:         parseInt(optional("RETRY_BASE_DELAY_MS", "2000")),
 

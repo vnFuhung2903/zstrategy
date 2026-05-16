@@ -5,7 +5,7 @@ import { state } from "../keeper";
 import { insertShares, deleteSharesForCommitment } from "../store/shares";
 import { publicKeyset } from "../threshold/keys";
 import { reconstructUserSecret } from "../threshold/reconstruct";
-import { ethUsdOracle } from "../chain/oracle";
+import { fetchPairPrice } from "../chain/oracle";
 import { submitExecution } from "../execution/submitter";
 import { OrderKind, Direction } from "../types";
 
@@ -214,10 +214,10 @@ app.post("/api/execute", requireSecret, async (req: Request, res: Response) => {
     // refuse to reconstruct the secret, even if the Go backend already
     // approved. The Go backend will retry on its next 30s tick.
     try {
-      const oracle = await ethUsdOracle.fetchPrice();
+      const pairPrice = await fetchPairPrice(tokenIn, tokenOut);
       const lp  = BigInt(limitPrice ?? "0");
       const dir = direction === 1 ? "SELL" : "BUY";
-      const condMet = dir === "SELL" ? oracle.price >= lp : oracle.price <= lp;
+      const condMet = dir === "SELL" ? pairPrice >= lp : pairPrice <= lp;
       if (!condMet) {
         res.status(422).json({ error: "Fill condition not met (re-verify)" });
         return;

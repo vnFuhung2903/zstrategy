@@ -26,14 +26,6 @@ export interface ExecuteRequest {
   userSecret:     string;   // reconstructed by /api/execute handler before calling submitter
 }
 
-// ── Oracle price ──────────────────────────────────────────────────────────────
-
-export interface OraclePrice {
-  pair:      string;
-  price:     bigint;
-  updatedAt: number;
-}
-
 // ── Keeper state (in-memory snapshot) ────────────────────────────────────────
 
 export interface KeeperState {
