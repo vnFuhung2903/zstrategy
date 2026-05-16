@@ -28,6 +28,8 @@
 import { ethers, network } from "hardhat";
 import * as fs from "fs";
 import * as path from "path";
+import * as dotenv from "dotenv";
+dotenv.config();
 
 interface Deployment {
   network:            string;
