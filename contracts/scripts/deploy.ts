@@ -42,10 +42,6 @@ interface Deployment {
   commitmentRegistry: string;
   gasVault:           string;
   dexAdapter:         string;
-  wethUsdFeed:        string;
-  usdcUsdFeed:        string;
-  weth:               string;
-  usdc:               string;
   deployedAt:         string;
 }
 
@@ -200,10 +196,6 @@ async function main() {
     commitmentRegistry: registryAddr,
     gasVault:           gasVaultAddr,
     dexAdapter,
-    wethUsdFeed,
-    usdcUsdFeed,
-    weth,
-    usdc,
     deployedAt:         new Date().toISOString(),
   };
 
