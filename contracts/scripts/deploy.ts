@@ -1,32 +1,28 @@
 /**
- * zstrategy Phase 2/4 deployment script.
+ * zstrategy Phase 2/4 deployment script — Arbitrum Sepolia testnet.
  *
  * Run with:
- *   npx hardhat run scripts/deploy.ts --network <name>
+ *   npx hardhat run scripts/deploy.ts --network arbitrumSepolia
  *
- * Behaviour:
- *   - Components default to mocks (MockZKVerifier, MockDEXAdapter,
- *     MockChainlinkAggregator, two MockERC20s for WETH/USDC).
- *   - Any component can be overridden by setting the matching env var to an
- *     existing address, in which case that component is reused as-is.
- *   - Wires `vault.setRegistry`, then registers the price feed for both
- *     (tokenIn → tokenOut) and (tokenOut → tokenIn) so SELL and BUY paths
- *     resolve to the same ETH/USD feed.
- *   - Deploys DCAVerifier and calls registry.setVerifier(1, dcaVerifier).
- *   - Writes the resulting addresses to `deployments/<network>.json` for the
- *     frontend (`NEXT_PUBLIC_*` vars) and keeper (`*_ADDRESS` vars) to consume.
+ * Our contracts deployed: OrderFillVerifier, DCAVerifier, UniswapV3Adapter,
+ *   CollateralVault, CommitmentRegistry, GasVault.
  *
- * Env overrides (all optional):
- *   ORDER_FILL_VERIFIER_ADDRESS — reuse an existing ORDER_FILL verifier
- *   DCA_VERIFIER_ADDRESS    — reuse an existing DCA verifier
- *   DEX_ADAPTER_ADDRESS     — reuse an existing IDEXAdapter
- *   ETH_USD_FEED_ADDRESS    — reuse an existing Chainlink-compatible feed
- *   WETH_ADDRESS            — reuse an existing WETH-equivalent ERC-20
- *   USDC_ADDRESS            — reuse an existing USDC-equivalent ERC-20
- *   GUARDIAN_ADDRESS        — guardian for the registry; defaults to deployer
- *   MOCK_DEX_OUT            — fixed output amount for the mock DEX (default 1 USDC)
- *   MOCK_FEED_DECIMALS      — decimals for the mock Chainlink feed (default 8)
- *   MOCK_FEED_INITIAL       — initial answer for the mock feed (default 3000_00000000)
+ * Required env vars (real testnet addresses — not mocked):
+ *   WETH_ADDRESS            — e.g. 0x980B62Da83eFf3D4576C647993b0c1D7faf17c73 (Arb Sepolia WETH)
+ *   USDC_ADDRESS            — e.g. 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d (Arb Sepolia USDC)
+ *   UNISWAP_ROUTER_ADDRESS  — Uniswap v3 SwapRouter on this chain
+ *
+ * Optional env vars:
+ *   ORDER_FILL_VERIFIER_ADDRESS — reuse an existing OrderFillVerifier
+ *   DCA_VERIFIER_ADDRESS        — reuse an existing DCAVerifier
+ *   DEX_ADAPTER_ADDRESS         — reuse an existing UniswapV3Adapter
+ *   GAS_VAULT_ADDRESS           — reuse an existing GasVault (avoids orphaning balances)
+ *   ETH_USD_FEED_ADDRESS        — reuse a real Chainlink feed; omit to deploy MockChainlinkAggregator
+ *   UNISWAP_FEE_TIER            — pool fee tier in bps×100 (default 500 = 0.05%)
+ *   SWAP_DEADLINE_BUFFER        — seconds added to block.timestamp for swap deadline (default 300)
+ *   MOCK_FEED_DECIMALS          — decimals for the mock feed (default 8)
+ *   MOCK_FEED_INITIAL           — initial answer for the mock feed (default 300000000000 = $3000)
+ *   GUARDIAN_ADDRESS            — guardian for the registry; defaults to deployer
  */
 
 import { ethers, network } from "hardhat";
@@ -44,7 +40,8 @@ interface Deployment {
   commitmentRegistry: string;
   gasVault:           string;
   dexAdapter:         string;
-  priceFeed:          string;
+  wethUsdFeed:        string;
+  usdcUsdFeed:        string;
   weth:               string;
   usdc:               string;
   deployedAt:         string;
@@ -73,18 +70,15 @@ async function main() {
   console.log(`Deployer: ${deployer.address}`);
   console.log(`Guardian: ${guardian}\n`);
 
-  // ── ERC-20s ─────────────────────────────────────────────────────────────
-  const ERC20F = await ethers.getContractFactory("MockERC20");
-  const weth = await deployIfMissing(process.env.WETH_ADDRESS, "WETH", async () => {
-    const c = await ERC20F.deploy("Mock WETH", "WETH", 18);
-    await c.waitForDeployment();
-    return c.getAddress();
-  });
-  const usdc = await deployIfMissing(process.env.USDC_ADDRESS, "USDC", async () => {
-    const c = await ERC20F.deploy("Mock USDC", "USDC", 6);
-    await c.waitForDeployment();
-    return c.getAddress();
-  });
+  // ── ERC-20s (real testnet addresses required — not mocked) ──────────────
+  if (!process.env.WETH_ADDRESS || !ethers.isAddress(process.env.WETH_ADDRESS))
+    throw new Error("WETH_ADDRESS is required");
+  if (!process.env.USDC_ADDRESS || !ethers.isAddress(process.env.USDC_ADDRESS))
+    throw new Error("USDC_ADDRESS is required");
+  const weth = process.env.WETH_ADDRESS as string;
+  const usdc = process.env.USDC_ADDRESS as string;
+  console.log(`  WETH                 ${weth}  (from env)`);
+  console.log(`  USDC                 ${usdc}  (from env)`);
 
   // ── Verifiers ───────────────────────────────────────────────────────────
   // The bb-generated verifier files each declare their own `ZKTranscriptLib`
@@ -123,24 +117,24 @@ async function main() {
     return c.getAddress();
   });
 
-  // ── Price feed ──────────────────────────────────────────────────────────
-  const priceFeed = await deployIfMissing(process.env.ETH_USD_FEED_ADDRESS, "ETH/USD feed", async () => {
-    const decimals = parseInt(process.env.MOCK_FEED_DECIMALS ?? "8");
-    const initial  = BigInt(process.env.MOCK_FEED_INITIAL ?? "300000000000"); // $3000 with 8 dec
-    const FeedF = await ethers.getContractFactory("MockChainlinkAggregator");
-    const c = await FeedF.deploy(decimals, initial);
-    await c.waitForDeployment();
-    return c.getAddress();
-  });
+  // ── Price feeds (per-token USD feeds; pair price derived on-chain) ───────
+  if (!process.env.CHAINLINK_PRICE_FEED_WETH_USD || !ethers.isAddress(process.env.CHAINLINK_PRICE_FEED_WETH_USD))
+    throw new Error("CHAINLINK_PRICE_FEED_WETH_USD is required");
+  if (!process.env.CHAINLINK_PRICE_FEED_USDC_USD || !ethers.isAddress(process.env.CHAINLINK_PRICE_FEED_USDC_USD))
+    throw new Error("CHAINLINK_PRICE_FEED_USDC_USD is required");
+  const wethUsdFeed = process.env.CHAINLINK_PRICE_FEED_WETH_USD as string;
+  const usdcUsdFeed = process.env.CHAINLINK_PRICE_FEED_USDC_USD as string;
+  console.log(`  WETH/USD feed        ${wethUsdFeed}  (from env)`);
+  console.log(`  USDC/USD feed        ${usdcUsdFeed}  (from env)`);
 
   // ── DEX adapter ─────────────────────────────────────────────────────────
-  // MockDEXAdapter is fine for testnets where Uniswap v3 isn't deployed
-  // (e.g. Arbitrum Sepolia). Set DEX_ADAPTER_ADDRESS to a real adapter when
-  // moving to a chain with real liquidity.
-  const dexAdapter = await deployIfMissing(process.env.DEX_ADAPTER_ADDRESS, "DEX adapter", async () => {
-    const mockOut = BigInt(process.env.MOCK_DEX_OUT ?? "1000000"); // 1 USDC default
-    const DEXF = await ethers.getContractFactory("MockDEXAdapter");
-    const c = await DEXF.deploy(mockOut);
+  const dexAdapter = await deployIfMissing(process.env.DEX_ADAPTER_ADDRESS, "UniswapV3Adapter", async () => {
+    const routerAddr = process.env.UNISWAP_ROUTER_ADDRESS;
+    if (!routerAddr || !ethers.isAddress(routerAddr)) throw new Error("UNISWAP_ROUTER_ADDRESS is required");
+    const feeTier      = parseInt(process.env.UNISWAP_FEE_TIER ?? "500");
+    const deadlineBuf  = parseInt(process.env.SWAP_DEADLINE_BUFFER ?? "300");
+    const AdapterF = await ethers.getContractFactory("UniswapV3Adapter");
+    const c = await AdapterF.deploy(routerAddr, feeTier, deadlineBuf);
     await c.waitForDeployment();
     return c.getAddress();
   });
@@ -162,16 +156,13 @@ async function main() {
   await (await vault.setRegistry(registryAddr)).wait();
   console.log("  vault.setRegistry    ✓");
 
-  // Same ETH/USD feed for both directions: the circuit and frontend treat the
-  // limit price as USD per ETH regardless of side, and the BUY/SELL direction
-  // flips the inequality, not the unit.
   const registryAsGuardian =
     guardian === deployer.address
       ? registry
       : registry.connect(await ethers.getSigner(guardian));
 
-  await (await (registryAsGuardian as any).setPriceFeed(weth, usdc, priceFeed)).wait();
-  await (await (registryAsGuardian as any).setPriceFeed(usdc, weth, priceFeed)).wait();
+  await (await (registryAsGuardian as any).setPriceFeed(weth, wethUsdFeed)).wait();
+  await (await (registryAsGuardian as any).setPriceFeed(usdc, usdcUsdFeed)).wait();
   console.log("  setPriceFeed (×2)    ✓");
 
   await (await (registryAsGuardian as any).setVerifier(1, dcaVerifier)).wait();
@@ -207,7 +198,8 @@ async function main() {
     commitmentRegistry: registryAddr,
     gasVault:           gasVaultAddr,
     dexAdapter,
-    priceFeed,
+    wethUsdFeed,
+    usdcUsdFeed,
     weth,
     usdc,
     deployedAt:         new Date().toISOString(),
@@ -226,7 +218,8 @@ async function main() {
   console.log(`  COMMITMENT_REGISTRY_ADDRESS=${registryAddr}`);
   console.log(`  COLLATERAL_VAULT_ADDRESS=${vaultAddr}`);
   console.log(`  GAS_VAULT_ADDRESS=${gasVaultAddr}`);
-  console.log(`  CHAINLINK_ETH_USD=${priceFeed}`);
+  console.log(`  CHAINLINK_PRICE_FEED_WETH_USD=${wethUsdFeed}`);
+  console.log(`  CHAINLINK_PRICE_FEED_USDC_USD=${usdcUsdFeed}`);
   console.log(`  CHAIN_ID=${chainId}`);
 }
 
