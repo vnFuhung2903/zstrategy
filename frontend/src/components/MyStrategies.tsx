@@ -130,28 +130,53 @@ function StrategyRow({
       const userSecret = await recoverSecret();
       const nullifier = computeNullifier(userSecret, strategy.nonce);
 
-      // Resolve the registry's configured price feed for this pair, then read
-      // the live answer. The contract reads the same feed at execution and
-      // hands that value to the verifier as a public input — proof + on-chain
-      // value must match or verification reverts.
-      const feedAddress = (await publicClient.readContract({
-        address: registryAddr,
-        abi: COMMITMENT_REGISTRY_ABI,
-        functionName: "priceFeeds",
-        args: [strategy.tokenIn, strategy.tokenOut],
-      })) as `0x${string}`;
+      // Read per-token USD feeds from the registry, then derive the pair price
+      // using the same formula as _readOraclePrice on-chain. The proof must be
+      // generated with the exact same value the contract will compute at
+      // execution time, or verification reverts.
+      const [feedInAddr, feedOutAddr] = (await Promise.all([
+        publicClient.readContract({
+          address: registryAddr,
+          abi: COMMITMENT_REGISTRY_ABI,
+          functionName: "priceFeeds",
+          args: [strategy.tokenIn],
+        }),
+        publicClient.readContract({
+          address: registryAddr,
+          abi: COMMITMENT_REGISTRY_ABI,
+          functionName: "priceFeeds",
+          args: [strategy.tokenOut],
+        }),
+      ])) as [`0x${string}`, `0x${string}`];
 
-      if (feedAddress.toLowerCase() === ZERO_ADDRESS) {
-        throw new Error("No price feed configured for this token pair");
-      }
+      if (feedInAddr.toLowerCase() === ZERO_ADDRESS)
+        throw new Error("No USD price feed configured for tokenIn");
+      if (feedOutAddr.toLowerCase() === ZERO_ADDRESS)
+        throw new Error("No USD price feed configured for tokenOut");
 
-      const round = (await publicClient.readContract({
-        address: feedAddress,
-        abi: PRICE_FEED_ABI,
-        functionName: "latestRoundData",
-      })) as readonly [bigint, bigint, bigint, bigint, bigint];
-      const answer = round[1];
-      if (answer <= 0n) throw new Error("Oracle returned non-positive price");
+      const [[roundIn, roundOut], [decimalsIn, decimalsOut]] = await Promise.all([
+        Promise.all([
+          publicClient.readContract({ address: feedInAddr,  abi: PRICE_FEED_ABI, functionName: "latestRoundData" }),
+          publicClient.readContract({ address: feedOutAddr, abi: PRICE_FEED_ABI, functionName: "latestRoundData" }),
+        ]),
+        Promise.all([
+          publicClient.readContract({ address: feedInAddr,  abi: PRICE_FEED_ABI, functionName: "decimals" }),
+          publicClient.readContract({ address: feedOutAddr, abi: PRICE_FEED_ABI, functionName: "decimals" }),
+        ]),
+      ]) as [
+        [readonly [bigint, bigint, bigint, bigint, bigint], readonly [bigint, bigint, bigint, bigint, bigint]],
+        [number, number]
+      ];
+
+      const answerIn  = (roundIn  as readonly [bigint, bigint, bigint, bigint, bigint])[1];
+      const answerOut = (roundOut as readonly [bigint, bigint, bigint, bigint, bigint])[1];
+      if (answerIn  <= 0n) throw new Error("Oracle returned non-positive price for tokenIn");
+      if (answerOut <= 0n) throw new Error("Oracle returned non-positive price for tokenOut");
+
+      // Mirror _readOraclePrice: normalise to 1e18 then derive pair price with dOut decimal places.
+      const normIn  = answerIn  * 10n ** BigInt(18 - decimalsIn);
+      const normOut = answerOut * 10n ** BigInt(18 - decimalsOut);
+      const answer  = normIn * 10n ** BigInt(decimalsOut) / normOut;
 
       setIsProving(true);
       const proof = await generateOrderFillProof({
