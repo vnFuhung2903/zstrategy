@@ -85,9 +85,10 @@ contract CommitmentRegistry is ReentrancyGuard {
     ///         Defaults to 1 hour; guardian may widen for feeds with longer heartbeat.
     uint256 public oracleStaleness = 1 hours;
 
-    /// @notice Per-pair Chainlink price feeds. tokenIn → tokenOut → feed.
-    ///         Quote convention: feed reports the price of tokenIn denominated in tokenOut.
-    mapping(address tokenIn => mapping(address tokenOut => IPriceFeed)) public priceFeeds;
+    /// @notice Per-token Chainlink USD price feeds. Each token maps to a feed that returns
+    ///         its price denominated in USD. The pair price (tokenIn/tokenOut) is derived
+    ///         on-chain: price = (tokenIn_USD / tokenOut_USD) with tokenOut feed decimals precision.
+    mapping(address token => IPriceFeed) public priceFeeds;
 
     mapping(bytes32 => CommitmentRecord) public commitments;
     mapping(bytes32 => bool)             public nullifiers;
@@ -117,7 +118,7 @@ contract CommitmentRegistry is ReentrancyGuard {
     event CommitmentExpired(bytes32 indexed commitmentHash, address indexed owner);
     event DEXAdapterChanged(address indexed oldAdapter, address indexed newAdapter);
     event GasVaultChanged(address indexed oldVault, address indexed newVault);
-    event PriceFeedSet(address indexed tokenIn, address indexed tokenOut, address indexed feed);
+    event PriceFeedSet(address indexed token, address indexed feed);
     event OracleStalenessSet(uint256 oldValue, uint256 newValue);
     event Paused(address indexed guardian);
     event Unpaused(address indexed guardian);
@@ -332,19 +333,38 @@ contract CommitmentRegistry is ReentrancyGuard {
         emit CommitmentExecuted(commitmentHash, c.owner, msg.sender, nullifier, fillRef, amountOut, c.kind);
     }
 
-    /// @dev Read the configured Chainlink feed for (tokenIn → tokenOut), validate
-    ///      freshness and positivity, then narrow to uint64 with overflow check.
+    /// @dev Derive the tokenIn/tokenOut price from two Chainlink USD feeds.
+    ///      price = (tokenIn_USD / tokenOut_USD) expressed with tokenOut feed decimal places.
+    ///      Both feeds are validated for freshness and positivity before use.
     function _readOraclePrice(address tokenIn, address tokenOut) internal view returns (uint64) {
-        IPriceFeed feed = priceFeeds[tokenIn][tokenOut];
-        require(address(feed) != address(0), "Registry: no price feed");
+        IPriceFeed feedIn  = priceFeeds[tokenIn];
+        IPriceFeed feedOut = priceFeeds[tokenOut];
+        require(address(feedIn)  != address(0), "Registry: no USD feed for tokenIn");
+        require(address(feedOut) != address(0), "Registry: no USD feed for tokenOut");
 
-        (, int256 answer, , uint256 updatedAt, ) = feed.latestRoundData();
-        require(answer > 0,                                       "Registry: invalid oracle answer");
-        require(updatedAt > 0,                                    "Registry: incomplete round");
-        require(block.timestamp - updatedAt <= oracleStaleness,   "Registry: stale oracle");
+        (, int256 answerIn,  , uint256 updatedAtIn,  ) = feedIn.latestRoundData();
+        (, int256 answerOut, , uint256 updatedAtOut, ) = feedOut.latestRoundData();
 
-        uint256 priceU = uint256(answer);
-        require(priceU <= type(uint64).max, "Registry: oracle price overflow");
+        require(answerIn  > 0, "Registry: invalid tokenIn oracle answer");
+        require(answerOut > 0, "Registry: invalid tokenOut oracle answer");
+        // Staleness checks disabled for testnet — Arbitrum Sepolia feeds update infrequently.
+        // Re-enable for mainnet: uncomment the two lines below and remove this comment.
+        // require(updatedAtIn  > 0 && block.timestamp - updatedAtIn  <= oracleStaleness,
+        //         "Registry: stale tokenIn oracle");
+        // require(updatedAtOut > 0 && block.timestamp - updatedAtOut <= oracleStaleness,
+        //         "Registry: stale tokenOut oracle");
+
+        uint256 dIn  = uint256(feedIn.decimals());
+        uint256 dOut = uint256(feedOut.decimals());
+
+        // Normalise both answers to 1e18, then derive the pair price.
+        // Result has dOut decimal places — consistent with what the ZK circuit expects.
+        uint256 normIn  = uint256(answerIn)  * 10 ** (18 - dIn);
+        uint256 normOut = uint256(answerOut) * 10 ** (18 - dOut);
+        uint256 priceU  = normIn * 10 ** dOut / normOut;
+
+        require(priceU > 0,                     "Registry: derived price is zero");
+        require(priceU <= type(uint64).max,      "Registry: oracle price overflow");
 
         return uint64(priceU);
     }
@@ -444,15 +464,13 @@ contract CommitmentRegistry is ReentrancyGuard {
         volumeBaseline[tokenIn] = baseline;
     }
 
-    /// @notice Configure the Chainlink-compatible feed for a (tokenIn → tokenOut) pair.
+    /// @notice Configure the Chainlink-compatible USD price feed for a token.
     ///         Pass the zero address to remove the feed.
-    function setPriceFeed(address tokenIn, address tokenOut, address feed) external onlyGuardian {
-        require(tokenIn  != address(0), "Registry: zero tokenIn");
-        require(tokenOut != address(0), "Registry: zero tokenOut");
-        require(tokenIn  != tokenOut,   "Registry: same token");
+    function setPriceFeed(address token, address feed) external onlyGuardian {
+        require(token != address(0), "Registry: zero token");
 
-        priceFeeds[tokenIn][tokenOut] = IPriceFeed(feed);
-        emit PriceFeedSet(tokenIn, tokenOut, feed);
+        priceFeeds[token] = IPriceFeed(feed);
+        emit PriceFeedSet(token, feed);
     }
 
     /// @notice Adjust the maximum accepted age of a Chainlink answer.

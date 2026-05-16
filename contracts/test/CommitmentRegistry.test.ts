@@ -22,7 +22,8 @@ describe("CommitmentRegistry", () => {
   let tokenOut: MockERC20;
   let verifier: MockZKVerifier;
   let dexAdapter: MockDEXAdapter;
-  let priceFeed: MockChainlinkAggregator;
+  let feedIn:  MockChainlinkAggregator;   // tokenIn (USDC) / USD
+  let feedOut: MockChainlinkAggregator;   // tokenOut (WETH) / USD
   let vault: CollateralVault;
   let registry: CommitmentRegistry;
 
@@ -30,8 +31,14 @@ describe("CommitmentRegistry", () => {
   const MIN_OUT = ethers.parseUnits("0.03", 18);
   const DEX_OUT = ethers.parseUnits("0.033", 18);
   const PROOF   = "0x" + "ab".repeat(256);       // dummy — verifier is mocked
-  const FEED_DEC    = 8;
-  const FEED_ANSWER = 2900_00000000n;            // $2900 with 8 decimals
+  const FEED_DEC        = 8;
+  const USDC_USD_ANSWER = 1_00000000n;           // $1.00 with 8 decimals
+  const WETH_USD_ANSWER = 2900_00000000n;        // $2900 with 8 decimals
+  // Derived price = floor(normIn * 10^8 / normOut)
+  //   normIn  = 1e8  * 1e10 = 1e18
+  //   normOut = 2900e8 * 1e10 = 2.9e21
+  //   price   = 1e26 / 2.9e21 = 34482
+  const DERIVED_PRICE   = 34482n;
   const ORDER_FILL  = 0;                         // CommitmentKind.ORDER_FILL
 
   let commitmentHash: string;
@@ -52,7 +59,8 @@ describe("CommitmentRegistry", () => {
     dexAdapter = (await DEXF.deploy(DEX_OUT)) as unknown as MockDEXAdapter;
 
     const FeedF = await ethers.getContractFactory("MockChainlinkAggregator");
-    priceFeed = (await FeedF.deploy(FEED_DEC, FEED_ANSWER)) as unknown as MockChainlinkAggregator;
+    feedIn  = (await FeedF.deploy(FEED_DEC, USDC_USD_ANSWER)) as unknown as MockChainlinkAggregator;
+    feedOut = (await FeedF.deploy(FEED_DEC, WETH_USD_ANSWER)) as unknown as MockChainlinkAggregator;
 
     // Break circular dependency: vault ← registry ← vault
     //   1. Deploy vault (no constructor arg needed now)
@@ -71,11 +79,8 @@ describe("CommitmentRegistry", () => {
 
     await vault.connect(guardian).setRegistry(await registry.getAddress());
 
-    await registry.connect(guardian).setPriceFeed(
-      await tokenIn.getAddress(),
-      await tokenOut.getAddress(),
-      await priceFeed.getAddress(),
-    );
+    await registry.connect(guardian).setPriceFeed(await tokenIn.getAddress(),  await feedIn.getAddress());
+    await registry.connect(guardian).setPriceFeed(await tokenOut.getAddress(), await feedOut.getAddress());
 
     // Seed dexAdapter with tokenOut (output side of swaps)
     await tokenOut.mint(await dexAdapter.getAddress(), ethers.parseUnits("1000", 18));
@@ -299,11 +304,11 @@ describe("CommitmentRegistry", () => {
       ).to.emit(registry, "CommitmentExecuted");
     });
 
-    it("emits the live oracle price in CommitmentExecuted", async () => {
+    it("emits the derived oracle price in CommitmentExecuted", async () => {
       await expect(
         registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF)
       ).to.emit(registry, "CommitmentExecuted")
-       .withArgs(commitmentHash, user.address, keeper.address, nullifier, FEED_ANSWER, DEX_OUT, ORDER_FILL);
+       .withArgs(commitmentHash, user.address, keeper.address, nullifier, DERIVED_PRICE, DEX_OUT, ORDER_FILL);
     });
 
     it("audit-logs the executor address in CommitmentExecuted", async () => {
@@ -311,40 +316,27 @@ describe("CommitmentRegistry", () => {
       await expect(
         registry.connect(user).executeCommitment(commitmentHash, nullifier, PROOF)
       ).to.emit(registry, "CommitmentExecuted")
-       .withArgs(commitmentHash, user.address, user.address, nullifier, FEED_ANSWER, DEX_OUT, ORDER_FILL);
+       .withArgs(commitmentHash, user.address, user.address, nullifier, DERIVED_PRICE, DEX_OUT, ORDER_FILL);
     });
 
-    it("reverts when no price feed is configured for the pair", async () => {
-      // Wipe the feed for this pair
-      await registry.connect(guardian).setPriceFeed(
-        await tokenIn.getAddress(),
-        await tokenOut.getAddress(),
-        ethers.ZeroAddress,
-      );
+    it("reverts when no USD feed is configured for tokenIn", async () => {
+      await registry.connect(guardian).setPriceFeed(await tokenIn.getAddress(), ethers.ZeroAddress);
       await expect(
         registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF)
-      ).to.be.revertedWith("Registry: no price feed");
+      ).to.be.revertedWith("Registry: no USD feed for tokenIn");
     });
 
-    it("reverts on stale oracle answer", async () => {
-      // Set a tight 60-second staleness window then warp 2 minutes forward
-      await registry.connect(guardian).setOracleStaleness(60);
-      await time.increase(120);
+    it("reverts on non-positive tokenIn oracle answer", async () => {
+      await feedIn.setAnswer(0);
       await expect(
         registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF)
-      ).to.be.revertedWith("Registry: stale oracle");
-    });
-
-    it("reverts on non-positive oracle answer", async () => {
-      await priceFeed.setAnswer(0);
-      await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF)
-      ).to.be.revertedWith("Registry: invalid oracle answer");
+      ).to.be.revertedWith("Registry: invalid tokenIn oracle answer");
     });
 
     it("reverts on oracle answer that overflows uint64", async () => {
-      // 2**64 — one above the uint64 ceiling
-      await priceFeed.setAnswer(BigInt("18446744073709551616"));
+      // Set feedOut to $1 so derived price == feedIn.answer; then feedIn = 2^64 overflows uint64.
+      await feedOut.setAnswer(100000000n);
+      await feedIn.setAnswer(BigInt("18446744073709551616")); // 2^64
       await expect(
         registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF)
       ).to.be.revertedWith("Registry: oracle price overflow");

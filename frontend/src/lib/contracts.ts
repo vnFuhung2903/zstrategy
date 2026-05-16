@@ -13,8 +13,8 @@ export const ADDRESSES = {
 export const TOKENS = {
   WETH:  (process.env.NEXT_PUBLIC_WETH_ADDRESS ?? "0x980B62Da83eFf3D4576C647993b0c1D7faf17c73") as `0x${string}`,
   USDC:  (process.env.NEXT_PUBLIC_USDC_ADDRESS ?? "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d") as `0x${string}`,
-  USDT:  (process.env.NEXT_PUBLIC_USDT_ADDRESS  ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
-  WBTC:  (process.env.NEXT_PUBLIC_WBTC_ADDRESS  ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
+  USDT:  (process.env.NEXT_PUBLIC_USDT_ADDRESS  ?? "0x93d67359A0f6F117150a70fDde6BB96782497248") as `0x${string}`,
+  WBTC:  (process.env.NEXT_PUBLIC_WBTC_ADDRESS  ?? "0x7f6A192d690BF5A4762485f3DdD8D8b65cfF627e") as `0x${string}`,
 } as const;
 
 // ── ABIs (minimal — only user-facing functions) ───────────────────────────────
@@ -110,8 +110,7 @@ export const COMMITMENT_REGISTRY_ABI = [
     name: "priceFeeds",
     stateMutability: "view",
     inputs: [
-      { name: "tokenIn",  type: "address" },
-      { name: "tokenOut", type: "address" },
+      { name: "token", type: "address" },
     ],
     outputs: [{ name: "", type: "address" }],
   },
