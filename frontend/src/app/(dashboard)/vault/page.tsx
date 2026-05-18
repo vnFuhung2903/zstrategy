@@ -68,8 +68,19 @@ export default function VaultPage() {
 
         {/* Deposit / Withdraw panels — collateral (ERC-20) + gas tank (native ETH) */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <VaultPanel />
-          <GasTankPanel />
+          {tab === 0 && (
+            <>
+              <VaultPanel />
+              <div className="hidden md:block" />
+            </>
+          )}
+
+          {tab === 1 && (
+            <>
+              <GasTankPanel />
+              <div className="hidden md:block" />
+            </>
+          )}
         </div>
       </div>
     </>
