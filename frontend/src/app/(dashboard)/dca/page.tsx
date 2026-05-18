@@ -91,7 +91,7 @@ export default function DcaPage() {
   const minOutBig  = useMemo(() => { try { return minOutInput ? parseUnits(minOutInput, tokenOut.decimals) : BigInt(0); } catch { return BigInt(0); } }, [minOutInput, tokenOut.decimals]);
   const totalSpend = useMemo(() => sizeBig * BigInt(roundCount), [sizeBig, roundCount]);
 
-  const now      = Math.floor(Date.now() / 1000);
+  const [now] = useState(() => Math.floor(Date.now() / 1000));
   const schedule = useMemo(() => buildSchedule(roundCount, interval, now), [roundCount, interval, now]);
 
   async function handleSubmit() {
@@ -331,32 +331,6 @@ export default function DcaPage() {
                   </p>
                 </div>
                 <Badge variant="sovereign" dot className="shrink-0">DCA Circuit</Badge>
-              </div>
-
-              {/* Terminal */}
-              <div className="bg-surface-container-lowest rounded-sm p-3 md:p-4 font-mono text-xs space-y-1.5 border border-outline-variant/15 overflow-x-auto">
-                <p className="text-on-surface-variant whitespace-nowrap">DCA circuit: 192-byte preimage, time fill condition</p>
-                <p className="text-on-surface whitespace-nowrap">{">"} Circuit: DCA | Rounds: {roundCount} | Interval: {intervalKey} | Window: ±15%</p>
-                <p className="text-primary-container whitespace-nowrap">{">"} [OK] commitment = keccak256(tokenIn ‖ tokenOut ‖ size ‖ minOut ‖ lo ‖ hi ‖ expiry ‖ nonce ‖ secret)</p>
-                <p className="text-on-surface whitespace-nowrap">{">"} tokenIn={tokenIn.address.slice(0, 10)}… tokenOut={tokenOut.address.slice(0, 10)}…</p>
-                <p className="text-on-surface whitespace-nowrap">{">"} size={sizeInput} {tokenIn.name} | minOut={minOutInput || "0"} {tokenOut.name} | rounds={roundCount}</p>
-                <p className="text-on-surface-variant whitespace-nowrap">Execution windows (private — keeper sees hashes only):</p>
-                {schedule.slice(0, 3).map((s, i) => (
-                  <p key={i} className="text-secondary whitespace-nowrap">
-                    {">"} Round {i}: [{fmt(s.scheduledLo)}, {fmt(s.scheduledHi)}]
-                  </p>
-                ))}
-                {roundCount > 3 && (
-                  <p className="text-on-surface-variant whitespace-nowrap">{">"} … {roundCount - 3} more rounds</p>
-                )}
-                {isSigning     && <p className="text-secondary animate-pulse">{">"} Awaiting wallet signature for user_secret derivation...</p>}
-                {busy && !isSigning && <p className="text-primary-container animate-pulse">{">"} Submitting batch tx ({roundCount} commitments)...</p>}
-                {isSuccess     && <p className="text-primary-container">{">"} [OK] {roundCount} commitments registered on-chain ✓</p>}
-                {isSuccess && pendingPost && !postSynced && (
-                  <p className="text-secondary animate-pulse">{">"} Syncing encrypted shares to keeper network...</p>
-                )}
-                {postSynced    && <p className="text-primary-container">{">"} [OK] DCA group synced to keeper network ✓</p>}
-                {!busy && !isSuccess && <p className="text-primary-container animate-pulse">{">"} _</p>}
               </div>
 
               {errorMessage && (

@@ -88,6 +88,11 @@ export default function StrategyPage() {
   const { data: gasBalance }     = useGasBalance();
   const { register, isPending, isConfirming, isSuccess, error } = useRegisterCommitment();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
+  const [formatted, setFormatted] = useState({
+    estOutput: "",
+    minOut: "",
+    expiry: "",
+  });
 
   // Keeper-gas precondition. We require ≥ 1 estimated fill in the tank before
   // accepting a new strategy — otherwise the keeper trigger will revert on
@@ -133,15 +138,27 @@ export default function StrategyPage() {
     } catch { return BigInt(0); }
   }, [targetPrice]);
 
-  const expiry = Math.floor(Date.now() / 1000) + TIME_IN_FORCE[tif];
+  const [now] = useState(() => Math.floor(Date.now() / 1000));
 
-  const estOutput = useMemo(
-    () => expectedOutFloat.toLocaleString(undefined, { maximumFractionDigits: tokenOut.decimals === 18 ? 6 : 2 }),
-    [expectedOutFloat, tokenOut.decimals],
-  );
+  const expiry = useMemo(() => {
+    if (!now) return null;
+    return now + TIME_IN_FORCE[tif];
+  }, [now, tif]);
+
+  useEffect(() => {
+  if (!expiry) return;
+    setFormatted({
+      estOutput: expectedOutFloat.toLocaleString(undefined, {
+        maximumFractionDigits: tokenOut.decimals === 18 ? 6 : 2,
+      }),
+      minOut: parseFloat(formatUnits(minOutBig, tokenOut.decimals))
+        .toLocaleString(undefined, { maximumFractionDigits: 6 }),
+      expiry: new Date(expiry * 1000).toLocaleDateString(),
+    });
+  }, [expectedOutFloat, minOutBig, tokenOut.decimals, expiry]);
 
   async function handleSubmit() {
-    if (!isConnected || !address || amountBig === BigInt(0) || priceBig === BigInt(0)) return;
+    if (!isConnected || !address || amountBig === BigInt(0) || priceBig === BigInt(0) || !expiry) return;
     setSubmitError(null);
 
     try {
@@ -232,32 +249,6 @@ export default function StrategyPage() {
       setAmount(parseFloat(formatUnits(tokenInBalance, tokenIn.decimals)).toFixed(Math.min(tokenIn.decimals, 6)));
     }
   }
-
-  // Preview hash uses a derived placeholder secret so the user can see the
-  // commitment hash shape before signing. The real on-submit hash is rebuilt
-  // with the wallet-derived secret, so this preview is purely illustrative.
-  const previewSecret = useMemo<`0x${string}`>(() => randomBytes32(), []);
-  const previewHash = useMemo<`0x${string}`>(() => {
-    if (!address || priceBig === BigInt(0) || amountBig === BigInt(0)) {
-      return ("0x" + "0".repeat(64)) as `0x${string}`;
-    }
-    return computeCommitment({
-      tokenIn:    tokenIn.address,
-      tokenOut:   tokenOut.address,
-      size:       amountBig,
-      minOut:     minOutBig,
-      expiry:     BigInt(expiry),
-      price:      priceBig,
-      direction,
-      nonce:      nonceRef.current,
-      userSecret: previewSecret,
-    });
-  }, [address, amountBig, minOutBig, expiry, priceBig, previewSecret, tokenIn.address, tokenOut.address, direction]);
-
-  const previewNullifier = useMemo<`0x${string}`>(
-    () => computeNullifier(previewSecret, nonceRef.current),
-    [previewSecret],
-  );
 
   // Once the on-chain tx confirms, hand the encrypted shares + metadata to the
   // keeper network. Failures here leave the on-chain commitment intact (the
@@ -416,9 +407,21 @@ export default function StrategyPage() {
               {/* Summary */}
               <div className="bg-surface-container-lowest rounded-sm p-3 space-y-2 text-sm">
                 {[
-                  { label: "Est. Output",        value: `${estOutput} ${tokenOut.name}`,         cls: "text-on-surface font-tabular font-medium" },
-                  { label: "Min. Output (0.5%)",  value: `${parseFloat(formatUnits(minOutBig, tokenOut.decimals)).toLocaleString(undefined, { maximumFractionDigits: 6 })} ${tokenOut.name}`, cls: "text-on-surface font-tabular" },
-                  { label: "Expiry",             value: new Date(expiry * 1000).toLocaleDateString(), cls: "text-on-surface font-tabular" },
+                  {
+                    label: "Est. Output",
+                    value: `${formatted.estOutput || ""} ${tokenOut.name}`,
+                    cls: "text-on-surface font-tabular font-medium",
+                  },
+                  {
+                    label: "Min. Output (0.5%)",
+                    value: `${formatted.minOut || ""} ${tokenOut.name}`,
+                    cls: "text-on-surface font-tabular",
+                  },
+                  {
+                    label: "Expiry",
+                    value: formatted.expiry || "",
+                    cls: "text-on-surface font-variant",
+                  },
                 ].map(({ label, value, cls }) => (
                   <div key={label} className="flex justify-between gap-2">
                     <span className="text-on-surface-variant truncate">{label}</span>
@@ -441,30 +444,6 @@ export default function StrategyPage() {
                   </p>
                 </div>
                 <Badge variant="sovereign" dot className="shrink-0">ZKP Active</Badge>
-              </div>
-
-              {/* Terminal */}
-              <div className="bg-surface-container-lowest rounded-sm p-3 md:p-4 font-mono text-xs space-y-1.5 border border-outline-variant/15 overflow-x-auto">
-                <p className="text-on-surface-variant whitespace-nowrap">// Preview commitment (real one rebuilt on submit with wallet-derived secret)</p>
-                <p className="text-on-surface whitespace-nowrap">{">"} Loading circuit: OrderFill (185-byte preimage)</p>
-                <p className="text-primary-container whitespace-nowrap">{">"} [OK] Circuit loaded</p>
-                <p className="text-on-surface whitespace-nowrap">
-                  {">"} tokenIn={tokenIn.address.slice(0, 10)}… tokenOut={tokenOut.address.slice(0, 10)}…
-                </p>
-                <p className="text-on-surface whitespace-nowrap">
-                  {">"} size={amount} {tokenIn.name} | minOut={parseFloat(formatUnits(minOutBig, tokenOut.decimals)).toFixed(4)} {tokenOut.name} | kind={kind} | direction={direction === 1 ? "SELL" : "BUY"}
-                </p>
-                <p className="text-on-surface-variant whitespace-nowrap">// commitment = keccak256(tokenIn ‖ tokenOut ‖ size ‖ minOut ‖ expiry ‖ price ‖ direction ‖ nonce ‖ secret)</p>
-                <p className="text-primary-container break-all">{">"} preview: {previewHash}</p>
-                <p className="text-secondary break-all">{">"} preview nullifier: {previewNullifier}</p>
-                {isSigning && <p className="text-secondary animate-pulse">{">"} Awaiting wallet signature for user_secret derivation...</p>}
-                {busy && !isSigning && <p className="text-primary-container animate-pulse">{">"} Submitting tx...</p>}
-                {isSuccess && <p className="text-primary-container">{">"} [OK] Commitment registered on-chain ✓</p>}
-                {isSuccess && pendingPost && !postSynced && (
-                  <p className="text-secondary animate-pulse">{">"} Syncing encrypted shares to keeper network...</p>
-                )}
-                {postSynced && <p className="text-primary-container">{">"} [OK] Shares distributed to keeper network ✓</p>}
-                {!busy && !isSuccess && <p className="text-primary-container animate-pulse">{">"} _</p>}
               </div>
 
               {/* Status */}
