@@ -16,8 +16,7 @@ const spaceGrotesk = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "zstrategy — Private DeFi Trading",
-  description: "Privacy-preserving DeFi trading automation using ZK proofs.",
+  title: "ZStrategy",
 };
 
 export default function RootLayout({
