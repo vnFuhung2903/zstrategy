@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { TokenPairSelect } from "@/components/ui/TokenPairSelect";
-import { Lock, Info, Loader2, CheckCircle2, AlertCircle, Repeat2 } from "lucide-react";
+import { Lock, Info, Loader2, AlertCircle, Repeat2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DEFAULT_PAIR, type TradingPair } from "@/lib/tradingPairs";
 import { useFreeBalance, formatUnits as fmtUnits } from "@/hooks/useVault";
@@ -58,7 +58,6 @@ export default function DcaPage() {
   const [sizeInput,   setSizeInput]   = useState("");
   const [roundCount,  setRoundCount]  = useState(5);
   const [intervalKey, setIntervalKey] = useState<keyof typeof INTERVALS>("24H");
-  const [minOutInput, setMinOutInput] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [pendingPost, setPendingPost] = useState<PostDcaGroupBody | null>(null);
   const [postSynced,  setPostSynced]  = useState(false);
@@ -88,7 +87,6 @@ export default function DcaPage() {
 
   const interval   = INTERVALS[intervalKey];
   const sizeBig    = useMemo(() => { try { return parseUnits(sizeInput || "0", tokenIn.decimals); } catch { return BigInt(0); } }, [sizeInput, tokenIn.decimals]);
-  const minOutBig  = useMemo(() => { try { return minOutInput ? parseUnits(minOutInput, tokenOut.decimals) : BigInt(0); } catch { return BigInt(0); } }, [minOutInput, tokenOut.decimals]);
   const totalSpend = useMemo(() => sizeBig * BigInt(roundCount), [sizeBig, roundCount]);
 
   const [now] = useState(() => Math.floor(Date.now() / 1000));
@@ -119,7 +117,7 @@ export default function DcaPage() {
           tokenIn:     tokenIn.address,
           tokenOut:    tokenOut.address,
           size:        sizeBig,
-          minOut:      minOutBig,
+          minOut:      0n,
           scheduledLo: BigInt(sched[i].scheduledLo),
           scheduledHi: BigInt(sched[i].scheduledHi),
           expiry:      BigInt(sched[i].expiry),
@@ -143,7 +141,7 @@ export default function DcaPage() {
         tokenIn:     tokenIn.address,
         tokenOut:    tokenOut.address,
         size:        sizeBig.toString(),
-        minOut:      minOutBig.toString(),
+        minOut:      "0",
         expiry:      sched[i].expiry,
         scheduledLo: sched[i].scheduledLo,
         scheduledHi: sched[i].scheduledHi,
@@ -164,7 +162,7 @@ export default function DcaPage() {
           nonce:          r.nonce,
           nullifier:      r.nullifier,
           size:           r.size,
-          minOut:         r.minOut,
+          minOut:        "0",
           scheduledLo:    r.scheduledLo,
           scheduledHi:    r.scheduledHi,
           expiry:         r.expiry,
@@ -177,7 +175,7 @@ export default function DcaPage() {
         tokenIn.address,
         tokenOut.address,
         Array(roundCount).fill(sizeBig) as bigint[],
-        Array(roundCount).fill(minOutBig) as bigint[],
+        Array(roundCount).fill(0n) as bigint[],
         sched.map(s => BigInt(s.expiry)),
         DCA_KIND,
       );
@@ -288,20 +286,6 @@ export default function DcaPage() {
                 </div>
               </div>
 
-              {/* Min out per round */}
-              <div>
-                <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">
-                  Min {tokenOut.name} per Round (optional)
-                </p>
-                <input
-                  key={`${pair.baseToken.address}-${pair.quoteToken.address}-${side}`}
-                  type="number" min="0" step="any" value={minOutInput}
-                  onChange={e => setMinOutInput(e.target.value)}
-                  placeholder="0 — market execution"
-                  className="w-full bg-surface-container-lowest text-on-surface text-xl font-display font-semibold px-3 py-2.5 rounded-sm border-b border-outline-variant/30 outline-none focus:border-secondary transition-all placeholder:text-on-surface-variant/40"
-                />
-              </div>
-
               {/* Summary */}
               <div className="bg-surface-container-lowest rounded-sm p-3 space-y-2 text-sm">
                 {[
@@ -339,24 +323,24 @@ export default function DcaPage() {
                   {errorMessage.slice(0, 160)}
                 </div>
               )}
-              {gasShortfall && !isSuccess && (
+              {gasShortfall && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
                   <AlertCircle size={13} />
                   Gas tank too low for {roundCount} keeper fills — top up on the Vault page before submitting.
                 </div>
               )}
 
+              {/* Action — button stays in its ready state across submissions.
+                  Success is announced via the global toast (Sonner) from the
+                  useRegisterCommitmentBatch hook's useTxToast wiring. */}
               <div className="mt-4 md:mt-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
-                  <div className={cn("w-9 h-9 rounded-full flex items-center justify-center shrink-0", isSuccess ? "bg-primary-container/20" : "bg-secondary/10")}>
-                    {isSuccess
-                      ? <CheckCircle2 size={16} className="text-primary-container" />
-                      : <Repeat2 size={16} className="text-secondary" />
-                    }
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 bg-secondary/10">
+                    <Repeat2 size={16} className="text-secondary" />
                   </div>
                   <div>
                     <p className="text-sm font-medium text-on-surface">
-                      {isSuccess ? `${roundCount} rounds committed` : isConnected ? "Ready to schedule" : "Wallet not connected"}
+                      {isConnected ? "Ready to schedule" : "Wallet not connected"}
                     </p>
                     <p className="text-xs text-on-surface-variant">UltraHonk · DCA (192-byte preimage)</p>
                   </div>
@@ -365,16 +349,14 @@ export default function DcaPage() {
                   variant="sovereign"
                   size="md"
                   className="w-full sm:w-auto"
-                  disabled={!isConnected || busy || sizeBig === BigInt(0) || isSuccess || gasShortfall}
+                  disabled={!isConnected || busy || sizeBig === BigInt(0) || gasShortfall}
                   onClick={handleSubmit}
                 >
                   {busy
                     ? <><Loader2 size={14} className="animate-spin" />{isSigning ? "Signing…" : isConfirming ? "Confirming…" : "Submitting…"}</>
-                    : isSuccess
-                      ? <><CheckCircle2 size={14} />Scheduled</>
-                      : gasShortfall
-                        ? <><Lock size={14} />Top up gas tank</>
-                        : <><Lock size={14} />Sign &amp; Schedule DCA</>
+                    : gasShortfall
+                      ? <><Lock size={14} />Top up gas tank</>
+                      : <><Lock size={14} />Sign &amp; Schedule DCA</>
                   }
                 </Button>
               </div>
