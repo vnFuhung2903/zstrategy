@@ -4,6 +4,8 @@ import { useReadContract, useWriteContract, useWaitForTransactionReceipt, useAcc
 import { parseEther } from "viem";
 import { ADDRESSES, GAS_VAULT_ABI } from "@/lib/contracts";
 import { arbitrumSepolia } from "wagmi/chains";
+import { FEE_OVERRIDES } from "@/lib/wagmi";
+import { useTxToast } from "@/hooks/useTxToast";
 
 function useGasVaultAddress() {
   const chainId = useChainId();
@@ -30,6 +32,7 @@ export function useDepositGas() {
   const gasVault = useGasVaultAddress();
   const { writeContract, data: hash, isPending, error } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
+  useTxToast({ hash, isConfirming, isSuccess, error: error as Error | null, label: "Gas tank top-up" });
 
   const depositGas = (amountEth: string) =>
     writeContract({
@@ -38,6 +41,7 @@ export function useDepositGas() {
       functionName: "deposit",
       args: [],
       value: parseEther(amountEth),
+      ...FEE_OVERRIDES,
     });
 
   return { depositGas, hash, isPending, isConfirming, isSuccess, error };
@@ -48,6 +52,7 @@ export function useWithdrawGas() {
   const gasVault = useGasVaultAddress();
   const { writeContract, data: hash, isPending, error } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
+  useTxToast({ hash, isConfirming, isSuccess, error: error as Error | null, label: "Gas tank withdrawal" });
 
   const withdrawGas = (amountEth: string) =>
     writeContract({
@@ -55,6 +60,7 @@ export function useWithdrawGas() {
       abi: GAS_VAULT_ABI,
       functionName: "withdraw",
       args: [parseEther(amountEth)],
+      ...FEE_OVERRIDES,
     });
 
   return { withdrawGas, hash, isPending, isConfirming, isSuccess, error };
