@@ -5,6 +5,7 @@ import { config } from "../config";
 import { ExecuteRequest } from "../types";
 import { generateOrderFillProof } from "../zk/orderFill";
 import { generateDcaProof } from "../zk/dca";
+import { proofGenerationSeconds } from "../metrics";
 
 async function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -50,6 +51,7 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
       );
 
       let proof: `0x${string}`;
+      const proofTimer = proofGenerationSeconds.labels(req.kind).startTimer();
 
       if (req.kind === "DCA") {
         const blockTimestamp = Math.floor(Date.now() / 1000);
@@ -92,52 +94,84 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
           config.circuitJsonPath,
         );
       }
+      proofTimer();
 
-      // ── Preflight via eth_call ────────────────────────────────────────
-      // Simulate the on-chain call before paying real gas. Catches:
-      //   • "GasVault: insufficient gas balance" — user-fixable, sweeper retries
-      //   • "Registry: invalid proof"            — verifier rejected the proof
-      //   • "Registry: nullifier spent"          — race with another execute
-      //   • "Registry: stale oracle"             — feed went stale during proof gen
-      // We pin the real-submit gasPrice to `previewGasPrice` so the contract's
-      // `_debitGas` cost matches what we simulated. Otherwise a gas spike
-      // between preflight and submit could pass simulation but revert the
-      // real tx with the user's tank just-barely-too-small.
+      // 10× safety buffer on the fetched fee. Proof generation takes ~30s and
+      // can be retried, so the base fee at submission time may exceed what we
+      // sampled here; without the buffer the node can reject with "max fee per
+      // gas less than block base fee". The buffer raises the gas-tank debit by
+      // ~10× in stable periods but keeps fills landing through fee spikes.
+      // Frontend's PER_EXECUTION_GAS_PRICE_WEI is sized to match (see
+      // `useGasVault.ts`).
+      const GAS_PRICE_BUFFER = 10n;
       const feeData = await registryWriter.runner!.provider!.getFeeData();
-      const previewGasPrice = feeData.gasPrice ?? ethers.parseUnits("1", "gwei");
-      try {
-        await registryWriter.executeCommitment.staticCall(
-          req.commitmentHash, req.nullifier, proof,
-          { gasPrice: previewGasPrice },
-        );
-      } catch (preflightErr) {
-        const msg = preflightErr instanceof Error ? preflightErr.message : String(preflightErr);
-        console.warn(`[Submitter] preflight reverted: ${msg}`);
-        if (isUserFixableRevert(msg)) {
-          // Don't notifyBackendDone — the backend's 10-min stuck-EXECUTING
-          // sweeper will reset to PENDING; if the user has topped up by then,
-          // the next monitor tick re-triggers. Keeps strategy recoverable.
-          throw new Error(`[Submitter] user-fixable revert for ${req.commitmentHash}: ${msg}`);
-        }
-        if (isDefinitiveRevert(msg)) {
-          await notifyBackendDone(req.commitmentHash, `preflight: ${msg}`);
-          throw new Error(`[Submitter] preflight definitive revert for ${req.commitmentHash}: ${msg}`);
-        }
-        // Non-definitive (RPC hiccup, etc.) — fall through and let real submit try
-      }
+      const baseGasPrice = feeData.gasPrice ?? ethers.parseUnits("1", "gwei");
+      const previewGasPrice = baseGasPrice * GAS_PRICE_BUFFER;
 
+      // Pin gasLimit so ethers v6 skips eth_estimateGas. Arbitrum's
+      // estimateGas binary-searches gas values and is known to return
+      // spurious empty-data reverts during that search for txs whose
+      // sub-calls (UniswapV3 swap, verifier) are complex — even when an
+      // eth_call at a fixed gas would succeed. 5_000_000 is ~4× the
+      // worst-case expected ~1.2M (UltraHonk verify ~800k + swap ~200k +
+      // vault/debit overhead). Reverted txs on Arbitrum still consume gas,
+      // so we don't want this absurdly high.
+      const PINNED_GAS_LIMIT = 5_000_000n;
       const tx: ethers.TransactionResponse = await registryWriter.executeCommitment(
         req.commitmentHash,
         req.nullifier,
         proof,
-        { gasPrice: previewGasPrice },
+        { gasPrice: previewGasPrice, gasLimit: PINNED_GAS_LIMIT },
       );
 
       console.log(`[Submitter] tx submitted: ${tx.hash}`);
-      const receipt = await tx.wait(1);
+
+      // ethers v6: tx.wait() THROWS on revert (the receipt comes back inside
+      // the error). Capture the receipt from either branch so we always have
+      // it to drive the post-mortem.
+      let receipt: ethers.TransactionReceipt | null = null;
+      try {
+        receipt = await tx.wait(1);
+      } catch (waitErr) {
+        const r = (waitErr as { receipt?: ethers.TransactionReceipt | null }).receipt;
+        if (r) receipt = r;
+        else throw waitErr;
+      }
 
       if (!receipt || receipt.status !== 1) {
-        throw new Error(`Transaction reverted: ${tx.hash}`);
+        // Reverted on-chain. Re-run the same call as eth_call at the failing
+        // block to recover the decodable revert reason — the receipt itself
+        // doesn't carry the revert data, but a replay eth_call does.
+        console.warn(
+          `[Submitter] tx reverted on-chain hash=${tx.hash} ` +
+          `block=${receipt?.blockNumber} gasUsed=${receipt?.gasUsed} ` +
+          `— replaying as eth_call to recover revert reason...`,
+        );
+        try {
+          await registryWriter.runner!.provider!.call({
+            to:       await registryWriter.getAddress(),
+            from:     await (registryWriter.runner as ethers.Signer).getAddress(),
+            data:     registryWriter.interface.encodeFunctionData(
+              "executeCommitment",
+              [req.commitmentHash, req.nullifier, proof],
+            ),
+            gasPrice: previewGasPrice,
+            gasLimit: PINNED_GAS_LIMIT,
+            blockTag: receipt?.blockNumber,
+          });
+        } catch (replayErr) {
+          const m = replayErr instanceof Error ? replayErr.message : String(replayErr);
+          // ethers stuffs decoded custom-error selectors into `.data` on the
+          // thrown error — log it raw so we can grep on-chain for the selector.
+          const data = (replayErr as { data?: string }).data;
+          throw new Error(
+            `Transaction reverted: ${tx.hash} — replay revert: ${m}` +
+            (data ? ` (data=${data})` : ""),
+          );
+        }
+        throw new Error(
+          `Transaction reverted: ${tx.hash} (replay at block ${receipt?.blockNumber} did NOT reproduce — likely transient state, e.g. pool/oracle moved by the time we re-queried)`,
+        );
       }
 
       console.log(`[Submitter] executed hash=${req.commitmentHash.slice(0, 10)}... tx=${tx.hash}`);
@@ -148,8 +182,9 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
       console.warn(`[Submitter] attempt ${attempt + 1} failed: ${lastError.message}`);
 
       if (isUserFixableRevert(lastError.message)) {
-        // Same path as the preflight branch: leave the strategy EXECUTING in
-        // the backend; the stuck-EXECUTING sweeper recovers it after 10 min.
+        // Leave the strategy EXECUTING in the backend; the stuck-EXECUTING
+        // sweeper recovers it after 10 min, by which point the user may have
+        // fixed the underlying issue (e.g. topped up the gas tank).
         console.warn(`[Submitter] user-fixable revert — not retrying, sweeper will resume`);
         throw new Error(`[Submitter] user-fixable revert for ${req.commitmentHash}: ${lastError.message}`);
       }
