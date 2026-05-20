@@ -21,13 +21,15 @@ export type StrategyDirection = 0 | 1; // 0 = BUY, 1 = SELL
 
 /**
  * Frontend-only discriminator for display and form UX.
- * Does NOT affect the ZK circuit or contract — those only see `direction`.
+ * Does NOT affect the ZK circuit or contract — both still see kind=0 (ORDER_FILL).
  *
- * - LIMIT:       user-selected BUY or SELL, fills at a target price
- * - STOP_LOSS:   always sells base token when oracle falls to trigger (direction=BUY)
- * - TAKE_PROFIT: always sells base token when oracle rises to trigger (direction=SELL)
+ * - LIMIT:  user-selected BUY or SELL, fills at a target price (oracle-polled fill)
+ * - MARKET: user-selected BUY or SELL, fills immediately at current oracle price.
+ *           Encoded with a sentinel commitment price (u64.max for BUY, 0 for SELL)
+ *           so the circuit's fill check trivially passes. Backend skips polling
+ *           and triggers the keeper on the first monitor tick.
  */
-export type StrategyKind = "LIMIT" | "STOP_LOSS" | "TAKE_PROFIT";
+export type StrategyKind = "LIMIT" | "MARKET";
 
 export interface StrategyRecord {
   /** Primary key — keccak256(preimage). */

@@ -95,9 +95,11 @@ export async function generateOrderFillProof(inputs: OrderFillWitness): Promise<
   };
 
   const { witness } = await noir.execute(witnessInputs);
-  // `keccak: true` selects the EVM-compatible Honk transcript that matches
-  // OrderFillVerifier.sol generated via `bb write_solidity --oracle_hash keccak`.
-  const { proof } = (await backend.generateProof(witness, { keccak: true })) as { proof: Uint8Array };
+  // OrderFillVerifier.sol is a `UltraKeccakZKFlavor` verifier — see
+  // `keeper/src/zk/orderFill.ts` for why `verifierTarget: 'evm'` (ZK) is
+  // required and `'evm-no-zk'` produces a proof the verifier rejects with
+  // empty revert data.
+  const { proof } = (await backend.generateProof(witness, { verifierTarget: "evm" })) as { proof: Uint8Array };
 
   let hex = "";
   for (let i = 0; i < proof.length; i++) hex += proof[i].toString(16).padStart(2, "0");
