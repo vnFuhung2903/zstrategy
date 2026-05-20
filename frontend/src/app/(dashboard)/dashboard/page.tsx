@@ -79,10 +79,10 @@ export default function DashboardPage() {
                     <CardTitle>Recent Commitments</CardTitle>
                     <CardDescription>On-chain execution records</CardDescription>
                   </div>
-                  <Link href="/strategy">
+                  <Link href="/orders">
                     <Button variant="primary" size="sm" className="shrink-0">
                       <Plus size={14} />
-                      <span className="hidden sm:inline">New Strategy</span>
+                      <span className="hidden sm:inline">New Order</span>
                       <span className="sm:hidden">New</span>
                     </Button>
                   </Link>

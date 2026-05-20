@@ -19,7 +19,7 @@ import { useKeeperHealth } from "@/hooks/useBackendApi";
 
 const nav = [
   { href: "/dashboard", label: "Command Center", icon: LayoutDashboard },
-  { href: "/strategy",  label: "Strategy Builder", icon: TrendingUp },
+  { href: "/orders",    label: "Order Builder",    icon: TrendingUp },
   { href: "/vault",     label: "Vault",            icon: Shield },
   { href: "/dca",       label: "DCA Pulse",        icon: Repeat2 },
   { href: "/activity",  label: "Activity",         icon: Activity },

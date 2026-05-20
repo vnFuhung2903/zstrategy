@@ -301,18 +301,18 @@ export function MyStrategies() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>My Strategies</CardTitle>
+        <CardTitle>My Orders</CardTitle>
         <CardDescription>Local-only — derived from your wallet, never sent to a server</CardDescription>
       </CardHeader>
       <CardContent className="p-0">
         {!isConnected ? (
-          <p className="text-xs text-on-surface-variant text-center py-6">Connect your wallet to see your strategies.</p>
+          <p className="text-xs text-on-surface-variant text-center py-6">Connect your wallet to see your orders.</p>
         ) : loading ? (
           <div className="flex items-center justify-center py-6 text-on-surface-variant">
             <Loader2 size={14} className="animate-spin mr-2" /> Loading…
           </div>
         ) : strategies.length === 0 ? (
-          <p className="text-xs text-on-surface-variant text-center py-6">No strategies yet — create one from the Strategy page.</p>
+          <p className="text-xs text-on-surface-variant text-center py-6">No orders yet — create one from the Orders page.</p>
         ) : (
           strategies.map(s => (
             <StrategyRow

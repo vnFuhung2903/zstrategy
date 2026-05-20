@@ -24,8 +24,8 @@ export default function SettingsPage() {
                 desc: "Route transactions via private mempool",
               },
               {
-                title: "Per-Strategy Secrets",
-                desc: "Derive a unique user_secret per strategy to prevent cross-strategy linking",
+                title: "Per-Order Secrets",
+                desc: "Derive a unique user_secret per order to prevent cross-order linking",
               },
             ].map((item, i) => (
               <div key={item.title}>

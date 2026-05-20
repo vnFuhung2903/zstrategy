@@ -37,7 +37,7 @@ export default function ActivityPage() {
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 px-4 py-3 rounded-sm trust-zone-violet border border-secondary/20">
           <EyeOff size={14} className="text-secondary shrink-0" />
           <p className="text-xs text-on-surface-variant flex-1">
-            Only commitment hashes and execution timestamps are stored. Strategy parameters are never logged.
+            Only commitment hashes and execution timestamps are stored. Order parameters are never logged.
           </p>
           <Badge variant="sovereign" dot className="shrink-0">Anonymized</Badge>
         </div>

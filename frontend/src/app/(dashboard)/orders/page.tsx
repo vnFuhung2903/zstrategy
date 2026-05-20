@@ -7,7 +7,7 @@ import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
-import { Lock, Info, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { Lock, Info, Loader2, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useFreeBalance, formatUnits as fmtUnits } from "@/hooks/useVault";
 import { useGasBalance, PER_EXECUTION_ETH_ESTIMATE } from "@/hooks/useGasVault";
@@ -386,7 +386,7 @@ export default function StrategyPage() {
 
   return (
     <>
-      <Topbar title="Strategy Architect" />
+      <Topbar title="Order Architect" />
       <div className="p-4 md:p-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 max-w-7xl">
 
@@ -589,7 +589,7 @@ export default function StrategyPage() {
                   <p className="text-xs text-secondary uppercase tracking-widest mb-1">Cryptographic Commitment</p>
                   <h2 className="font-display text-xl md:text-2xl font-semibold text-on-surface">ZK Proof Enclave</h2>
                   <p className="text-sm text-on-surface-variant mt-1">
-                    Your strategy parameters are encrypted locally. The keeper only sees a commitment hash.
+                    Your order parameters are encrypted locally. The keeper only sees a commitment hash.
                   </p>
                 </div>
                 <Badge variant="sovereign" dot className="shrink-0">ZKP Active</Badge>
@@ -602,31 +602,31 @@ export default function StrategyPage() {
                   {errorMessage.slice(0, 160)}
                 </div>
               )}
-              {kind === "MARKET" && oracleError && !isSuccess && (
+              {kind === "MARKET" && oracleError && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-error">
                   <AlertCircle size={13} />
                   Oracle unavailable: {oracleError.slice(0, 140)}
                 </div>
               )}
-              {gasShortfall && !isSuccess && (
+              {gasShortfall && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
                   <AlertCircle size={13} />
                   Gas tank too low for keeper reimbursement — top up on the Vault page before submitting.
                 </div>
               )}
 
-              {/* Action */}
+              {/* Action — button stays in its ready state across submissions.
+                  Success is announced via the global toast (Sonner) from the
+                  useRegisterCommitment hook's useTxToast wiring, so we don't
+                  also need to swap icons/text here. */}
               <div className="mt-4 md:mt-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
-                  <div className={cn("w-9 h-9 rounded-full flex items-center justify-center shrink-0", isSuccess ? "bg-primary-container/20" : "bg-secondary/10")}>
-                    {isSuccess
-                      ? <CheckCircle2 size={16} className="text-primary-container" />
-                      : <Lock size={16} className="text-secondary" />
-                    }
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 bg-secondary/10">
+                    <Lock size={16} className="text-secondary" />
                   </div>
                   <div>
                     <p className="text-sm font-medium text-on-surface">
-                      {isSuccess ? "Commitment registered" : isConnected ? "Ready to encrypt" : "Wallet not connected"}
+                      {isConnected ? "Ready to encrypt" : "Wallet not connected"}
                     </p>
                     <p className="text-xs text-on-surface-variant">UltraHonk · OrderFill (185-byte preimage)</p>
                   </div>
@@ -639,7 +639,6 @@ export default function StrategyPage() {
                     !isConnected
                     || busy
                     || amountBig === BigInt(0)
-                    || isSuccess
                     || gasShortfall
                     || (kind === "LIMIT"  && priceBig === BigInt(0))
                     || (kind === "MARKET" && marketOraclePrice === null)
@@ -648,11 +647,9 @@ export default function StrategyPage() {
                 >
                   {busy
                     ? <><Loader2 size={14} className="animate-spin" />{isSigning ? "Signing…" : isConfirming ? "Confirming…" : "Submitting…"}</>
-                    : isSuccess
-                      ? <><CheckCircle2 size={14} />Committed</>
-                      : gasShortfall
-                        ? <><Lock size={14} />Top up gas tank</>
-                        : <><Lock size={14} />Sign &amp; Submit Commitment</>
+                    : gasShortfall
+                      ? <><Lock size={14} />Top up gas tank</>
+                      : <><Lock size={14} />Sign &amp; Submit Commitment</>
                   }
                 </Button>
               </div>
@@ -662,7 +659,7 @@ export default function StrategyPage() {
             <div className="flex gap-3 px-4 py-3 rounded-sm border-l-2 border-primary-container bg-primary-container/5">
               <Info size={14} className="text-primary-container mt-0.5 shrink-0" />
               <p className="text-xs text-on-surface-variant leading-relaxed">
-                Your wallet signs a per-strategy id to derive the secret. The signature stays in your browser;
+                Your wallet signs a per-order id to derive the secret. The signature stays in your browser;
                 only the commitment hash is posted on-chain. Cancel and self-execute work after a page reload
                 because the secret is recoverable from the wallet — no key management required.
               </p>

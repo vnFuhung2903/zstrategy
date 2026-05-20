@@ -30,7 +30,7 @@ export function BackupCard() {
     setBusy("export");
     try {
       const { count, filename } = await exportStrategies(address.toLowerCase() as `0x${string}`, password);
-      flash("ok", `Exported ${count} strategies → ${filename}`);
+      flash("ok", `Exported ${count} orders → ${filename}`);
     } catch (e) {
       flash("err", e instanceof Error ? e.message : String(e));
     } finally {
@@ -58,7 +58,7 @@ export function BackupCard() {
         address && owner.toLowerCase() !== address.toLowerCase()
           ? " (note: backup belongs to a different wallet)"
           : "";
-      flash("ok", `Imported ${count} strategies${ownerWarning}`);
+      flash("ok", `Imported ${count} orders${ownerWarning}`);
     } catch (e) {
       flash("err", e instanceof Error ? e.message : String(e));
     } finally {
@@ -69,11 +69,11 @@ export function BackupCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Strategy Backup</CardTitle>
+        <CardTitle>Order Backup</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-xs text-on-surface-variant">
-          Your strategy parameters are stored locally. Export an encrypted backup to restore
+          Your order parameters are stored locally. Export an encrypted backup to restore
           on another device. The backup is AES-GCM encrypted with a password you choose
           (PBKDF2-SHA256, 250 000 iterations).
         </p>
