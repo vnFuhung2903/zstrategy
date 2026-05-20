@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAccount } from "wagmi";
 import { formatUnits } from "viem";
 import { ArrowDownToLine, ArrowUpFromLine, Loader2, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
-import { useFreeBalance, useTokenBalance, useTokenAllowance, useDeposit, useWithdraw } from "@/hooks/useVault";
+import { useFreeBalance, useTokenBalance, useTokenAllowance, useApproveToken, useDeposit, useWithdraw } from "@/hooks/useVault";
 import { TOKENS } from "@/lib/contracts";
 import { cn } from "@/lib/utils";
 
@@ -29,11 +29,12 @@ export function VaultPanel() {
   const token = TOKEN_OPTIONS[tokenIdx];
 
   const { data: vaultBalance, refetch: refetchVault } = useFreeBalance(token.address);
-  const { data: walletBalance }                        = useTokenBalance(token.address);
-  const { data: allowance }                            = useTokenAllowance(token.address);
+  const { data: walletBalance }                                  = useTokenBalance(token.address);
+  const { data: allowance, refetch: refetchAllowance }           = useTokenAllowance(token.address);
 
-  const { approve, deposit, isPending: depositPending, isConfirming: depositConfirming, isSuccess: depositSuccess } = useDeposit();
-  const { withdraw, isPending: withdrawPending, isConfirming: withdrawConfirming, isSuccess: withdrawSuccess }       = useWithdraw();
+  const { approve,  isPending: approvePending,  isConfirming: approveConfirming,  isSuccess: approveSuccess,  hash: approveHash }   = useApproveToken();
+  const { deposit,  isPending: depositPending,  isConfirming: depositConfirming,  isSuccess: depositSuccess }                       = useDeposit();
+  const { withdraw, isPending: withdrawPending, isConfirming: withdrawConfirming, isSuccess: withdrawSuccess }                      = useWithdraw();
 
   const needsApproval =
     mode === "deposit" &&
@@ -42,8 +43,23 @@ export function VaultPanel() {
     parseFloat(amount) > 0 &&
     allowance < BigInt(Math.floor(parseFloat(amount) * 10 ** token.decimals));
 
-  const busy = depositPending || depositConfirming || withdrawPending || withdrawConfirming;
+  // Tx button is "busy" only while a tx is in-flight. Note: approve has its
+  // own state and does NOT count toward `done` — only the terminal deposit /
+  // withdraw flips the success view. Otherwise the button vanishes after
+  // approve and the user has no way to actually deposit.
+  const busy = approvePending || approveConfirming || depositPending || depositConfirming || withdrawPending || withdrawConfirming;
   const done = depositSuccess || withdrawSuccess;
+
+  // After approve confirms, force an allowance refetch so the button switches
+  // from "Approve" to "Deposit" without waiting up to 5s for the polling
+  // interval. Tracked by tx hash so back-to-back approves each trigger
+  // their own refetch.
+  const lastApprovedHashRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!approveSuccess || !approveHash || approveHash === lastApprovedHashRef.current) return;
+    lastApprovedHashRef.current = approveHash;
+    void refetchAllowance();
+  }, [approveSuccess, approveHash, refetchAllowance]);
 
   function fmt(raw: bigint | undefined) {
     if (raw === undefined) return "—";
