@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/zstrategy/backend/internal/domain"
+	"github.com/zstrategy/backend/internal/infrastructure/metrics"
 )
 
 type IndexerService struct {
@@ -53,6 +55,7 @@ func (s *IndexerService) pruneKeeperShares(commitmentHash string) {
 }
 
 func (s *IndexerService) HandleRegistered(ctx context.Context, commitmentHash, kind string, chainID int64, blockTime time.Time) error {
+	metrics.IndexerEventsTotal.WithLabelValues("CommitmentRegistered").Inc()
 	exists, err := s.repo.ExistsByHash(ctx, commitmentHash)
 	if err != nil {
 		return fmt.Errorf("check existence: %w", err)
@@ -64,6 +67,7 @@ func (s *IndexerService) HandleRegistered(ctx context.Context, commitmentHash, k
 	if k != domain.KindDCA {
 		k = domain.KindOrderFill
 	}
+	metrics.StrategiesRegistered.WithLabelValues(strconv.FormatInt(chainID, 10), string(k)).Inc()
 	return s.repo.Save(ctx, &domain.ExecutionRecord{
 		CommitmentHash: commitmentHash,
 		ChainID:        chainID,
@@ -74,6 +78,9 @@ func (s *IndexerService) HandleRegistered(ctx context.Context, commitmentHash, k
 }
 
 func (s *IndexerService) HandleExecuted(ctx context.Context, commitmentHash, txHash string, chainID int64, blockNumber, gasUsed uint64, blockTime time.Time) error {
+	metrics.IndexerEventsTotal.WithLabelValues("CommitmentExecuted").Inc()
+	kind := s.lookupKindLabel(ctx, commitmentHash)
+	metrics.ExecutionsTotal.WithLabelValues(strconv.FormatInt(chainID, 10), kind, string(domain.StatusExecuted)).Inc()
 	if s.Monitor != nil {
 		s.Monitor.StopMonitoring(commitmentHash)
 		s.Monitor.UpdateStatus(ctx, commitmentHash, domain.StrategyDone)
@@ -83,6 +90,9 @@ func (s *IndexerService) HandleExecuted(ctx context.Context, commitmentHash, txH
 }
 
 func (s *IndexerService) HandleCancelled(ctx context.Context, commitmentHash, txHash string, blockNumber uint64) error {
+	metrics.IndexerEventsTotal.WithLabelValues("CommitmentCancelled").Inc()
+	kind := s.lookupKindLabel(ctx, commitmentHash)
+	metrics.ExecutionsTotal.WithLabelValues("0", kind, string(domain.StatusCancelled)).Inc()
 	if s.Monitor != nil {
 		s.Monitor.StopMonitoring(commitmentHash)
 		s.Monitor.UpdateStatus(ctx, commitmentHash, domain.StrategyDone)
@@ -92,10 +102,25 @@ func (s *IndexerService) HandleCancelled(ctx context.Context, commitmentHash, tx
 }
 
 func (s *IndexerService) HandleExpired(ctx context.Context, commitmentHash string, blockNumber uint64) error {
+	metrics.IndexerEventsTotal.WithLabelValues("CommitmentExpired").Inc()
+	kind := s.lookupKindLabel(ctx, commitmentHash)
+	metrics.ExecutionsTotal.WithLabelValues("0", kind, string(domain.StatusExpired)).Inc()
 	if s.Monitor != nil {
 		s.Monitor.StopMonitoring(commitmentHash)
 		s.Monitor.UpdateStatus(ctx, commitmentHash, domain.StrategyDone)
 	}
 	go s.pruneKeeperShares(commitmentHash)
 	return s.repo.UpdateStatus(ctx, commitmentHash, domain.StatusExpired, "", blockNumber, 0, nil)
+}
+
+// lookupKindLabel returns "ORDER_FILL" or "DCA" for an existing record so the
+// terminal-event metric carries the same kind label as the register event.
+// On miss (no row yet) we fall back to "ORDER_FILL" — the metric is best-effort,
+// not authoritative.
+func (s *IndexerService) lookupKindLabel(ctx context.Context, commitmentHash string) string {
+	rec, err := s.repo.FindByHash(ctx, commitmentHash)
+	if err != nil || rec == nil {
+		return string(domain.KindOrderFill)
+	}
+	return string(rec.Kind)
 }
