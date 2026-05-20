@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+/* Make every clickable <button> show the pointer cursor on hover. Tailwind v4
+   ships without the `cursor: pointer` default that v3 used to bake into its
+   base layer, so without this rule buttons render with the text/I-beam cursor
+   even though they're interactive. The :not(:disabled) carve-out keeps the
+   default (forbidden) cursor on disabled buttons. */
+button:not(:disabled) {
+  cursor: pointer;
+}
+
 @theme inline {
   /* ── Surfaces ── */
   --color-background:               #131314;
