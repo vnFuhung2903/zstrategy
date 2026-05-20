@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Space_Grotesk } from "next/font/google";
+import { Toaster } from "sonner";
 import { Web3Provider } from "@/providers/Web3Provider";
 import "./globals.css";
 
@@ -26,6 +27,13 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} ${spaceGrotesk.variable} h-full dark`}>
       <body className="min-h-full bg-background text-on-surface antialiased">
         <Web3Provider>{children}</Web3Provider>
+        <Toaster
+          position="top-right"
+          theme="dark"
+          richColors
+          closeButton
+          toastOptions={{ className: "font-sans" }}
+        />
       </body>
     </html>
   );
