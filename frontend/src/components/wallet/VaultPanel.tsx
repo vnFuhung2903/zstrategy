@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useAccount } from "wagmi";
 import { formatUnits } from "viem";
-import { ArrowDownToLine, ArrowUpFromLine, Loader2, CheckCircle2 } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
@@ -32,9 +32,9 @@ export function VaultPanel() {
   const { data: walletBalance }                                  = useTokenBalance(token.address);
   const { data: allowance, refetch: refetchAllowance }           = useTokenAllowance(token.address);
 
-  const { approve,  isPending: approvePending,  isConfirming: approveConfirming,  isSuccess: approveSuccess,  hash: approveHash }   = useApproveToken();
-  const { deposit,  isPending: depositPending,  isConfirming: depositConfirming,  isSuccess: depositSuccess }                       = useDeposit();
-  const { withdraw, isPending: withdrawPending, isConfirming: withdrawConfirming, isSuccess: withdrawSuccess }                      = useWithdraw();
+  const { approve,  isPending: approvePending,  isConfirming: approveConfirming,  isSuccess: approveSuccess,  hash: approveHash } = useApproveToken();
+  const { deposit,  isPending: depositPending,  isConfirming: depositConfirming }  = useDeposit();
+  const { withdraw, isPending: withdrawPending, isConfirming: withdrawConfirming } = useWithdraw();
 
   const needsApproval =
     mode === "deposit" &&
@@ -43,12 +43,11 @@ export function VaultPanel() {
     parseFloat(amount) > 0 &&
     allowance < BigInt(Math.floor(parseFloat(amount) * 10 ** token.decimals));
 
-  // Tx button is "busy" only while a tx is in-flight. Note: approve has its
-  // own state and does NOT count toward `done` — only the terminal deposit /
-  // withdraw flips the success view. Otherwise the button vanishes after
-  // approve and the user has no way to actually deposit.
+  // Tx button is "busy" only while a tx is in-flight. Success is communicated
+  // via the global Sonner toast (wired by useTxToast inside each write hook),
+  // so the button stays enabled and ready for the next interaction — the user
+  // doesn't have to dismiss anything to deposit again.
   const busy = approvePending || approveConfirming || depositPending || depositConfirming || withdrawPending || withdrawConfirming;
-  const done = depositSuccess || withdrawSuccess;
 
   // After approve confirms, force an allowance refetch so the button switches
   // from "Approve" to "Deposit" without waiting up to 5s for the polling
@@ -157,23 +156,16 @@ export function VaultPanel() {
         />
 
         {/* CTA */}
-        {done ? (
-          <div className="flex items-center gap-2 text-xs text-primary-container">
-            <CheckCircle2 size={14} />
-            Transaction confirmed!
-          </div>
-        ) : (
-          <Button
-            variant="primary"
-            size="sm"
-            className="w-full"
-            disabled={busy || !amount || parseFloat(amount) <= 0}
-            onClick={handleAction}
-          >
-            {busy && <Loader2 size={12} className="animate-spin" />}
-            {needsApproval ? `Approve ${token.label}` : mode === "deposit" ? "Deposit" : "Withdraw"}
-          </Button>
-        )}
+        <Button
+          variant="primary"
+          size="sm"
+          className="w-full"
+          disabled={busy || !amount || parseFloat(amount) <= 0}
+          onClick={handleAction}
+        >
+          {busy && <Loader2 size={12} className="animate-spin" />}
+          {needsApproval ? `Approve ${token.label}` : mode === "deposit" ? "Deposit" : "Withdraw"}
+        </Button>
       </CardContent>
     </Card>
   );

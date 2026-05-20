@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useAccount, useBalance } from "wagmi";
 import { formatEther } from "viem";
-import { Fuel, ArrowDownToLine, ArrowUpFromLine, Loader2, CheckCircle2, Info } from "lucide-react";
+import { Fuel, ArrowDownToLine, ArrowUpFromLine, Loader2, Info } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
@@ -28,8 +28,10 @@ export function GasTankPanel() {
   const { depositGas, hash: depositHash, isPending: depositPending, isConfirming: depositConfirming, isSuccess: depositSuccess } = useDepositGas();
   const { withdrawGas, hash: withdrawHash, isPending: withdrawPending, isConfirming: withdrawConfirming, isSuccess: withdrawSuccess } = useWithdrawGas();
 
+  // Success is announced via the global Sonner toast (wired in useDepositGas /
+  // useWithdrawGas through useTxToast). Keep the button enabled afterward so
+  // the user can immediately top up again without dismissing anything.
   const busy = depositPending || depositConfirming || withdrawPending || withdrawConfirming;
-  const done = depositSuccess || withdrawSuccess;
 
   // wagmi caches `useReadContract` results by (address, abi, functionName, args),
   // so any component using `useGasBalance()` (this panel, the strategy page, the
@@ -143,23 +145,16 @@ export function GasTankPanel() {
         />
 
         {/* CTA */}
-        {done ? (
-          <div className="flex items-center gap-2 text-xs text-secondary">
-            <CheckCircle2 size={14} />
-            Transaction confirmed!
-          </div>
-        ) : (
-          <Button
-            variant="primary"
-            size="sm"
-            className="w-full"
-            disabled={busy || !amount || parseFloat(amount) <= 0}
-            onClick={handleAction}
-          >
-            {busy && <Loader2 size={12} className="animate-spin" />}
-            {mode === "deposit" ? "Top up gas tank" : "Withdraw"}
-          </Button>
-        )}
+        <Button
+          variant="primary"
+          size="sm"
+          className="w-full"
+          disabled={busy || !amount || parseFloat(amount) <= 0}
+          onClick={handleAction}
+        >
+          {busy && <Loader2 size={12} className="animate-spin" />}
+          {mode === "deposit" ? "Top up gas tank" : "Withdraw"}
+        </Button>
       </CardContent>
     </Card>
   );
