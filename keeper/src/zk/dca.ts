@@ -77,8 +77,28 @@ export async function generateDcaProof(
   };
 
   const { witness } = await noir.execute(witnessInputs);
-  const { proof } = await backend.generateProof(witness, { keccak: true });
-  return ("0x" + bytesToHex(proof)) as `0x${string}`;
+  // DCAVerifier.sol is a `UltraKeccakZKFlavor` verifier — see orderFill.ts
+  // for why `verifierTarget: 'evm'` (ZK) is required and `'evm-no-zk'` is not.
+  const proofData = await backend.generateProof(witness, { verifierTarget: "evm" });
+
+  // Off-chain integrity gate. With MockZKVerifier swapped in on-chain (thesis-
+  // demo workaround for the upstream bb Solidity-codegen bug — see
+  // contracts/scripts/swap-to-mock-verifier.ts), this is the ONLY check that
+  // the proof actually proves the statement. A FAIL here means we'd be asking
+  // the mock to rubber-stamp a proof bb.js itself rejects — exactly the trust
+  // break we want to refuse. So we abort instead of submitting.
+  let ok: boolean;
+  try {
+    ok = await backend.verifyProof(proofData, { verifierTarget: "evm" });
+  } catch (err) {
+    throw new Error(`[ZK] dca off-chain verifyProof threw — refusing to submit: ${err}`);
+  }
+  if (!ok) {
+    throw new Error(`[ZK] dca off-chain verifyProof returned FAIL — refusing to submit`);
+  }
+  console.log(`[ZK] dca off-chain verifyProof: PASS`);
+
+  return ("0x" + bytesToHex(proofData.proof)) as `0x${string}`;
 }
 
 function bytesToHex(bytes: Uint8Array): string {

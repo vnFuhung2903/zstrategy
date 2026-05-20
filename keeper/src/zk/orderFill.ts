@@ -86,13 +86,34 @@ export async function generateOrderFillProof(
 
   const { witness } = await noir.execute(witnessInputs);
 
-  // `keccak: true` selects the EVM-compatible Honk transcript hash. If the
-  // bb.js version doesn't accept this option (e.g. older releases use
-  // `UltraKeccakHonkBackend` instead), bump bb.js to ≥ 0.99 to match how the
-  // OrderFillVerifier.sol was generated.
-  const { proof } = await backend.generateProof(witness, { keccak: true });
+  // OrderFillVerifier.sol is a `UltraKeccakZKFlavor` verifier (see the
+  // "matching UltraKeccakZKFlavor" comment in the generated contract). The
+  // ZK flavor's proof carries extra Libra commitments + masking polynomials,
+  // so a non-ZK proof fails the verifier's bare `require(proof.length ==
+  // expectedProofSize)` with empty revert data. `verifierTarget: 'evm'`
+  // selects the EVM-targeted ZK Honk flavor; `'evm-no-zk'` would generate
+  // the wrong shape. (bb.js 4.x deprecated the old `{ keccak: true }` /
+  // `{ keccakZK: true }` flags in favor of `verifierTarget`.)
+  const proofData = await backend.generateProof(witness, { verifierTarget: "evm" });
 
-  return ("0x" + bytesToHex(proof)) as `0x${string}`;
+  // Off-chain integrity gate. With MockZKVerifier swapped in on-chain (thesis-
+  // demo workaround for the upstream bb Solidity-codegen bug — see
+  // contracts/scripts/swap-to-mock-verifier.ts), this is the ONLY check that
+  // the proof actually proves the statement. A FAIL here means we'd be asking
+  // the mock to rubber-stamp a proof bb.js itself rejects — exactly the trust
+  // break we want to refuse. So we abort instead of submitting.
+  let ok: boolean;
+  try {
+    ok = await backend.verifyProof(proofData, { verifierTarget: "evm" });
+  } catch (err) {
+    throw new Error(`[ZK] order_fill off-chain verifyProof threw — refusing to submit: ${err}`);
+  }
+  if (!ok) {
+    throw new Error(`[ZK] order_fill off-chain verifyProof returned FAIL — refusing to submit`);
+  }
+  console.log(`[ZK] order_fill off-chain verifyProof: PASS`);
+
+  return ("0x" + bytesToHex(proofData.proof)) as `0x${string}`;
 }
 
 function bytesToHex(bytes: Uint8Array): string {
