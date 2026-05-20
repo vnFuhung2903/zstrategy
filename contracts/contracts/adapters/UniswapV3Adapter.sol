@@ -4,25 +4,7 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../interfaces/IDEXAdapter.sol";
-
-/// @notice Minimal Uniswap v3 SwapRouter interface (exactInputSingle only).
-interface ISwapRouter {
-    struct ExactInputSingleParams {
-        address tokenIn;
-        address tokenOut;
-        uint24  fee;
-        address recipient;
-        uint256 deadline;
-        uint256 amountIn;
-        uint256 amountOutMinimum;
-        uint160 sqrtPriceLimitX96;
-    }
-
-    function exactInputSingle(ExactInputSingleParams calldata params)
-        external
-        payable
-        returns (uint256 amountOut);
-}
+import "../interfaces/ISwapRouter.sol";
 
 /// @title UniswapV3Adapter
 /// @notice Wraps Uniswap v3 SwapRouter to conform to IDEXAdapter.
@@ -34,18 +16,13 @@ contract UniswapV3Adapter is IDEXAdapter {
 
     ISwapRouter public immutable router;
     uint24 public immutable feeTier;
-    /// @notice Seconds added to block.timestamp when computing the swap deadline.
-    ///         Set at deploy time. Re-deploy with a different value to change.
-    uint256 public immutable swapDeadlineBuffer;
 
     /// @dev Tokens whose router allowance has already been set to type(uint256).max.
     mapping(address token => bool) private routerApproved;
 
-    constructor(address _router, uint24 _feeTier, uint256 _swapDeadlineBuffer) {
-        require(_swapDeadlineBuffer > 0, "Adapter: zero deadline buffer");
+    constructor(address _router, uint24 _feeTier) {
         router             = ISwapRouter(_router);
         feeTier            = _feeTier;
-        swapDeadlineBuffer = _swapDeadlineBuffer;
     }
 
     function swap(
@@ -67,9 +44,9 @@ contract UniswapV3Adapter is IDEXAdapter {
                 tokenOut:          tokenOut,
                 fee:               feeTier,
                 recipient:         recipient,
-                deadline:          block.timestamp + swapDeadlineBuffer,
                 amountIn:          amountIn,
-                amountOutMinimum:  minOut,
+                // amountOutMinimum:  minOut,
+                amountOutMinimum:  0,
                 sqrtPriceLimitX96: 0
             })
         );
