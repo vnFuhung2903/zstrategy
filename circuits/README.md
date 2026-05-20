@@ -6,8 +6,8 @@ Noir source for the ZK circuits that gate `CommitmentRegistry.executeCommitment`
 
 | Circuit             | Status   | Purpose                                                   |
 |---------------------|----------|-----------------------------------------------------------|
-| `order_fill`        | complete | Limit-order fill proof (also reused for stop-loss / TP)   |
-| `dca` (planned)     | —        | Time-window proof for Phase 4                             |
+| `order_fill`        | complete | Limit-order + market-order fill proof                     |
+| `dca`               | complete | Time-window proof for DCA rounds                          |
 
 ### `order_fill`
 
