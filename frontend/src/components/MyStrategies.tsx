@@ -43,19 +43,18 @@ function tokenInfo(addr: `0x${string}`): { symbol: string; decimals: number } {
 const STATUS_LABEL = ["None", "Pending", "Executed", "Cancelled", "Expired"] as const;
 
 const KIND_LABEL: Record<StrategyKind, string> = {
-  LIMIT:       "Limit",
-  STOP_LOSS:   "Stop-Loss",
-  TAKE_PROFIT: "Take-Profit",
+  LIMIT:  "Limit",
+  MARKET: "Market",
 };
 
 function KindBadge({ kind }: { kind: StrategyKind | undefined }) {
   const label = kind ? KIND_LABEL[kind] : "Limit";
   if (label === "Limit") return null;
-  const cls =
-    kind === "STOP_LOSS"
-      ? "text-error bg-error/10"
-      : "text-tertiary-container bg-tertiary-container/10";
-  return <span className={`text-xs font-medium px-2 py-0.5 rounded-sm ${cls}`}>{label}</span>;
+  return (
+    <span className="text-xs font-medium px-2 py-0.5 rounded-sm text-tertiary-container bg-tertiary-container/10">
+      {label}
+    </span>
+  );
 }
 
 function StatusBadge({ status }: { status: number }) {

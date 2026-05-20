@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect, useRef } from "react";
-import { useAccount, useSignMessage, useChainId } from "wagmi";
+import { useAccount, useSignMessage, useChainId, usePublicClient } from "wagmi";
 import { parseUnits, formatUnits } from "viem";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/Button";
@@ -26,6 +26,8 @@ import { saveStrategy, type StrategyKind } from "@/lib/strategyStore";
 import { splitAndEncryptSecret } from "@/lib/threshold";
 import { keeperApi } from "@/lib/keeperApi";
 import { backendApi, type PostStrategyBody } from "@/lib/backendApi";
+import { ADDRESSES, COMMITMENT_REGISTRY_ABI, PRICE_FEED_ABI } from "@/lib/contracts";
+import { arbitrumSepolia } from "wagmi/chains";
 
 const TIME_IN_FORCE: Record<string, number> = {
   "1H":  3600,
@@ -47,15 +49,40 @@ type Side = "BUY" | "SELL";
 // `oracle_price <= price` (or >=) check is unit-coherent.
 const ORACLE_DECIMALS = 8;
 
+// Slippage tolerance options. 1% is the default — tighter than typical AMM
+// swaps because the keeper executes against current oracle, not pool spot.
+const SLIPPAGE_OPTIONS = [0.5, 1, 2, 5] as const;
+type SlippagePct = typeof SLIPPAGE_OPTIONS[number];
+
+// MARKET commitment uses a sentinel price so the OrderFill circuit fill check
+// trivially passes — there is no real "target price" to commit to.
+//   BUY:  oracle <= price → set price = u64.max → always true
+//   SELL: oracle >= price → set price = 0       → always true
+const MARKET_PRICE_BUY  = (BigInt(1) << BigInt(64)) - BigInt(1);
+const MARKET_PRICE_SELL = BigInt(0);
+// MARKET orders should fill within seconds; cap expiry tightly so an unfilled
+// market order doesn't linger as a pending commitment.
+const MARKET_EXPIRY_SECONDS = 10 * 60;
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
+
 export default function StrategyPage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
+  const publicClient = usePublicClient();
   const [pair,       setPair]       = useState<TradingPair>(DEFAULT_PAIR);
   const [kind,       setKind]       = useState<StrategyKind>("LIMIT");
   const [side,       setSide]       = useState<Side>("SELL");
   const [tif,        setTif]        = useState<keyof typeof TIME_IN_FORCE>("7D");
   const [amount,     setAmount]     = useState("");
   const [targetPrice,setTargetPrice]= useState("");
+  const [slippage,   setSlippage]   = useState<SlippagePct>(1);
+  // Live oracle price for MARKET orders — fetched on demand, used both for the
+  // estimated-output display and to compute minOut against the user-selected
+  // slippage. Null until first fetch completes (or if the registry has no feed
+  // for the pair, in which case MARKET submission is blocked).
+  const [marketOraclePrice, setMarketOraclePrice] = useState<bigint | null>(null);
+  const [oracleError, setOracleError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   // Held until the on-chain registration confirms; only then do we POST to the
   // Go backend, so the chain is the source of truth before any off-chain row
@@ -68,21 +95,12 @@ export default function StrategyPage() {
   // submit, so abandoned drafts don't pollute IndexedDB.
   const nonceRef = useRef<`0x${string}`>(randomBytes32());
 
-  // For STOP_LOSS / TAKE_PROFIT, always sell the base token (WETH→USDC).
-  // For LIMIT, follow the user's side selector.
-  //
-  // Direction maps to the circuit fill condition:
-  //   STOP_LOSS   → direction=BUY  (oracle <= trigger — fills when price falls)
-  //   TAKE_PROFIT → direction=SELL (oracle >= trigger — fills when price rises)
-  //   LIMIT BUY   → direction=BUY
-  //   LIMIT SELL  → direction=SELL
-  const effectiveSide: Side = kind !== "LIMIT" ? "SELL" : side;
-  const tokenIn  = effectiveSide === "SELL" ? pair.baseToken  : pair.quoteToken;
-  const tokenOut = effectiveSide === "SELL" ? pair.quoteToken : pair.baseToken;
-  const direction =
-    kind === "STOP_LOSS"   ? DIRECTION_BUY  :
-    kind === "TAKE_PROFIT" ? DIRECTION_SELL :
-    effectiveSide === "SELL" ? DIRECTION_SELL : DIRECTION_BUY;
+  // Direction is just the user's side choice for both LIMIT and MARKET.
+  //   BUY  → direction=0 → circuit requires oracle <= price
+  //   SELL → direction=1 → circuit requires oracle >= price
+  const tokenIn  = side === "SELL" ? pair.baseToken  : pair.quoteToken;
+  const tokenOut = side === "SELL" ? pair.quoteToken : pair.baseToken;
+  const direction = side === "SELL" ? DIRECTION_SELL : DIRECTION_BUY;
 
   const { data: tokenInBalance } = useFreeBalance(tokenIn.address);
   const { data: gasBalance }     = useGasBalance();
@@ -113,37 +131,58 @@ export default function StrategyPage() {
     catch { return BigInt(0); }
   }, [amount, tokenIn.decimals]);
 
-  // Slippage-protected min out, denominated in tokenOut units.
-  //   SELL: spend `size` base tokens → receive ~`size * price` quote → min = * 0.995
-  //   BUY:  spend `size` quote tokens → receive ~`size / price` base  → min = * 0.995
-  const expectedOutFloat = useMemo(() => {
-    const price = parseFloat(targetPrice.replace(/,/g, "") || "0");
-    const size  = parseFloat(amount || "0");
-    if (price <= 0 || size <= 0) return 0;
-    return effectiveSide === "SELL" ? size * price : size / price;
-  }, [amount, targetPrice, effectiveSide]);
-
-  const minOutBig = useMemo(() => {
-    if (expectedOutFloat <= 0) return BigInt(0);
-    try {
-      return parseUnits((expectedOutFloat * 0.995).toFixed(tokenOut.decimals), tokenOut.decimals);
-    } catch { return BigInt(0); }
-  }, [expectedOutFloat, tokenOut.decimals]);
-
+  // The price the order is *committed* to. For LIMIT, this is the user's
+  // target. For MARKET, it's a sentinel that makes the circuit's fill check
+  // trivially pass — the contract still verifies the proof, but the keeper's
+  // re-verify against live oracle will pass for any reasonable oracle reading.
   const priceBig = useMemo(() => {
+    if (kind === "MARKET") {
+      return direction === DIRECTION_BUY ? MARKET_PRICE_BUY : MARKET_PRICE_SELL;
+    }
     try {
       const p = parseFloat(targetPrice.replace(/,/g, "") || "0");
       if (p <= 0) return BigInt(0);
       return parseUnits(p.toString(), ORACLE_DECIMALS);
     } catch { return BigInt(0); }
-  }, [targetPrice]);
+  }, [kind, direction, targetPrice]);
+
+  // Reference price used to compute expectedOut. For LIMIT this is the user's
+  // target; for MARKET this is the live oracle price we fetched (in
+  // 8-decimal Chainlink-style denomination).
+  const referencePriceFloat = useMemo(() => {
+    if (kind === "MARKET") {
+      if (!marketOraclePrice) return 0;
+      return parseFloat(formatUnits(marketOraclePrice, ORACLE_DECIMALS));
+    }
+    return parseFloat(targetPrice.replace(/,/g, "") || "0");
+  }, [kind, marketOraclePrice, targetPrice]);
+
+  // Slippage-protected min out, denominated in tokenOut units.
+  //   SELL: spend `size` base tokens → receive ~`size * price` quote
+  //   BUY:  spend `size` quote tokens → receive ~`size / price` base
+  // Min out = expected * (1 - slippage%).
+  const expectedOutFloat = useMemo(() => {
+    const size = parseFloat(amount || "0");
+    if (referencePriceFloat <= 0 || size <= 0) return 0;
+    return side === "SELL" ? size * referencePriceFloat : size / referencePriceFloat;
+  }, [amount, referencePriceFloat, side]);
+
+  const minOutBig = useMemo(() => {
+    if (expectedOutFloat <= 0) return BigInt(0);
+    try {
+      const factor = (100 - slippage) / 100;
+      return parseUnits((expectedOutFloat * factor).toFixed(tokenOut.decimals), tokenOut.decimals);
+    } catch { return BigInt(0); }
+  }, [expectedOutFloat, slippage, tokenOut.decimals]);
 
   const [now] = useState(() => Math.floor(Date.now() / 1000));
 
   const expiry = useMemo(() => {
     if (!now) return null;
+    // MARKET orders use a tight expiry — they're meant to fill within seconds.
+    if (kind === "MARKET") return now + MARKET_EXPIRY_SECONDS;
     return now + TIME_IN_FORCE[tif];
-  }, [now, tif]);
+  }, [now, tif, kind]);
 
   useEffect(() => {
   if (!expiry) return;
@@ -156,6 +195,78 @@ export default function StrategyPage() {
       expiry: new Date(expiry * 1000).toLocaleDateString(),
     });
   }, [expectedOutFloat, minOutBig, tokenOut.decimals, expiry]);
+
+  // Live "quote per base" pair price — only used for MARKET orders. We read
+  // the base and quote feeds explicitly (rather than tokenIn/tokenOut) so the
+  // displayed price is always `quoteToken per baseToken` regardless of side,
+  // matching how a trader thinks about WETH/USDC. The minOut computation in
+  // `expectedOutFloat` already uses this orientation (size * price for SELL,
+  // size / price for BUY), so the same number works for both display and the
+  // slippage-protected minOut.
+  //
+  // The commitment's on-chain priceBig is a separate sentinel (u64.max or 0)
+  // that makes the circuit's `oracle <= price` / `oracle >= price` check
+  // trivially pass — the contract's _readOraclePrice operates on
+  // tokenIn/tokenOut, not base/quote.
+  useEffect(() => {
+    if (kind !== "MARKET" || !publicClient) {
+      setMarketOraclePrice(null);
+      setOracleError(null);
+      return;
+    }
+    let cancelled = false;
+    setOracleError(null);
+
+    const registryAddr =
+      ADDRESSES[chainId as keyof typeof ADDRESSES]?.commitmentRegistry
+      ?? ADDRESSES[arbitrumSepolia.id].commitmentRegistry;
+
+    const baseAddr  = pair.baseToken.address;
+    const quoteAddr = pair.quoteToken.address;
+
+    (async () => {
+      try {
+        const [feedBaseAddr, feedQuoteAddr] = (await Promise.all([
+          publicClient.readContract({ address: registryAddr, abi: COMMITMENT_REGISTRY_ABI, functionName: "priceFeeds", args: [baseAddr]  }),
+          publicClient.readContract({ address: registryAddr, abi: COMMITMENT_REGISTRY_ABI, functionName: "priceFeeds", args: [quoteAddr] }),
+        ])) as [`0x${string}`, `0x${string}`];
+
+        if (feedBaseAddr.toLowerCase()  === ZERO_ADDRESS) throw new Error(`No USD feed for ${pair.baseToken.name}`);
+        if (feedQuoteAddr.toLowerCase() === ZERO_ADDRESS) throw new Error(`No USD feed for ${pair.quoteToken.name}`);
+
+        const [[roundBase, roundQuote], [decBase, decQuote]] = await Promise.all([
+          Promise.all([
+            publicClient.readContract({ address: feedBaseAddr,  abi: PRICE_FEED_ABI, functionName: "latestRoundData" }),
+            publicClient.readContract({ address: feedQuoteAddr, abi: PRICE_FEED_ABI, functionName: "latestRoundData" }),
+          ]),
+          Promise.all([
+            publicClient.readContract({ address: feedBaseAddr,  abi: PRICE_FEED_ABI, functionName: "decimals" }),
+            publicClient.readContract({ address: feedQuoteAddr, abi: PRICE_FEED_ABI, functionName: "decimals" }),
+          ]),
+        ]) as [
+          [readonly [bigint, bigint, bigint, bigint, bigint], readonly [bigint, bigint, bigint, bigint, bigint]],
+          [number, number]
+        ];
+
+        const answerBase  = roundBase[1];
+        const answerQuote = roundQuote[1];
+        if (answerBase <= 0n || answerQuote <= 0n) throw new Error("Oracle returned non-positive price");
+
+        // quote-per-base in ORACLE_DECIMALS denomination: normalise both to 1e18
+        // then divide. Result has ORACLE_DECIMALS places.
+        const normBase  = answerBase  * 10n ** BigInt(18 - decBase);
+        const normQuote = answerQuote * 10n ** BigInt(18 - decQuote);
+        const quotePerBase = normBase * 10n ** BigInt(ORACLE_DECIMALS) / normQuote;
+        if (!cancelled) setMarketOraclePrice(quotePerBase);
+      } catch (e) {
+        if (!cancelled) {
+          setMarketOraclePrice(null);
+          setOracleError(e instanceof Error ? e.message : String(e));
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [kind, publicClient, chainId, pair.baseToken.address, pair.baseToken.name, pair.quoteToken.address, pair.quoteToken.name]);
 
   async function handleSubmit() {
     if (!isConnected || !address || amountBig === BigInt(0) || priceBig === BigInt(0) || !expiry) return;
@@ -218,10 +329,15 @@ export default function StrategyPage() {
       // 5. Stash the keeper-bound payload — we POST it only AFTER the on-chain
       //    tx confirms (see the useEffect below). Posting earlier races the
       //    keeper's on-chain status check and yields a 422.
+      //
+      // For MARKET orders we tag the backend kind as "MARKET" so the monitor
+      // service fires the keeper trigger immediately rather than polling
+      // Chainlink. On-chain and from the keeper's perspective it is still
+      // kind=0 (ORDER_FILL) — the sentinel price makes the fill check pass.
       setPostSynced(false);
       setPendingPost({
         commitmentHash,
-        kind:       "ORDER_FILL",
+        kind:       kind === "MARKET" ? "MARKET" : "ORDER_FILL",
         chainId,
         tokenIn:    tokenIn.address,
         tokenOut:   tokenOut.address,
@@ -285,7 +401,7 @@ export default function StrategyPage() {
               <div>
                 <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Order Type</p>
                 <div className="flex gap-1.5">
-                  {(["LIMIT", "STOP_LOSS", "TAKE_PROFIT"] as const).map(k => (
+                  {(["LIMIT", "MARKET"] as const).map(k => (
                     <button
                       key={k}
                       onClick={() => setKind(k)}
@@ -296,14 +412,13 @@ export default function StrategyPage() {
                           : "border-outline-variant/20 text-on-surface-variant hover:border-outline-variant/50",
                       )}
                     >
-                      {k === "LIMIT" ? "Limit" : k === "STOP_LOSS" ? "Stop-Loss" : "Take-Profit"}
+                      {k === "LIMIT" ? "Limit" : "Market"}
                     </button>
                   ))}
                 </div>
               </div>
 
-              {/* Side — only shown for Limit orders */}
-              {kind === "LIMIT" && (
+              {/* Side */}
               <div>
                 <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Side</p>
                 <div className="flex gap-1.5">
@@ -325,7 +440,6 @@ export default function StrategyPage() {
                   ))}
                 </div>
               </div>
-              )}
 
               {/* Asset pair selector */}
               <div>
@@ -359,61 +473,96 @@ export default function StrategyPage() {
                 </div>
               </div>
 
-              {/* Target / trigger price — always denominated in QUOTE per BASE (USD per ETH) */}
-              <div>
-                <div className="flex justify-between mb-1.5">
-                  <label className="text-xs text-secondary uppercase tracking-widest">
-                    {kind === "STOP_LOSS"
-                      ? `Trigger Price — Downside Stop (${pair.quoteToken.name}/${pair.baseToken.name})`
-                      : kind === "TAKE_PROFIT"
-                      ? `Trigger Price — Upside Target (${pair.quoteToken.name}/${pair.baseToken.name})`
-                      : `Target Price (${pair.quoteToken.name} per ${pair.baseToken.name})`}
-                  </label>
+              {/* Target price — LIMIT only. MARKET fills at the live oracle price. */}
+              {kind === "LIMIT" && (
+                <div>
+                  <div className="flex justify-between mb-1.5">
+                    <label className="text-xs text-secondary uppercase tracking-widest">
+                      Target Price ({pair.quoteToken.name} per {pair.baseToken.name})
+                    </label>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={targetPrice}
+                      onChange={e => setTargetPrice(e.target.value)}
+                      className="w-full bg-surface-container-lowest text-on-surface text-xl font-display font-semibold px-3 py-2.5 rounded-sm border-b border-outline-variant/30 outline-none focus:border-secondary transition-all pr-14 font-tabular"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-on-surface-variant font-medium">{pair.quoteToken.name}</span>
+                  </div>
                 </div>
-                <div className="relative">
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={targetPrice}
-                    onChange={e => setTargetPrice(e.target.value)}
-                    className="w-full bg-surface-container-lowest text-on-surface text-xl font-display font-semibold px-3 py-2.5 rounded-sm border-b border-outline-variant/30 outline-none focus:border-secondary transition-all pr-14 font-tabular"
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-on-surface-variant font-medium">{pair.quoteToken.name}</span>
-                </div>
-              </div>
+              )}
 
-              {/* Time in force */}
+              {/* Slippage tolerance — applies to both LIMIT and MARKET minOut. */}
               <div>
-                <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Time in Force</p>
+                <div className="flex justify-between mb-2">
+                  <p className="text-xs text-on-surface-variant uppercase tracking-widest">Max Slippage</p>
+                  <span className="text-xs text-on-surface-variant">Min out = est × ({100 - slippage}%)</span>
+                </div>
                 <div className="flex gap-1.5">
-                  {Object.keys(TIME_IN_FORCE).map((t) => (
+                  {SLIPPAGE_OPTIONS.map(s => (
                     <button
-                      key={t}
-                      onClick={() => setTif(t)}
+                      key={s}
+                      onClick={() => setSlippage(s)}
                       className={cn(
                         "flex-1 py-1.5 text-xs font-medium rounded-sm border transition-all",
-                        tif === t
+                        slippage === s
                           ? "border-primary-container text-primary-container bg-primary-container/10"
                           : "border-outline-variant/20 text-on-surface-variant hover:border-outline-variant/50",
                       )}
                     >
-                      {t}
+                      {s}%
                     </button>
                   ))}
                 </div>
               </div>
 
+              {/* Time in force — LIMIT only. MARKET uses a fixed short expiry. */}
+              {kind === "LIMIT" && (
+                <div>
+                  <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Time in Force</p>
+                  <div className="flex gap-1.5">
+                    {Object.keys(TIME_IN_FORCE).map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => setTif(t)}
+                        className={cn(
+                          "flex-1 py-1.5 text-xs font-medium rounded-sm border transition-all",
+                          tif === t
+                            ? "border-primary-container text-primary-container bg-primary-container/10"
+                            : "border-outline-variant/20 text-on-surface-variant hover:border-outline-variant/50",
+                        )}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Summary */}
               <div className="bg-surface-container-lowest rounded-sm p-3 space-y-2 text-sm">
                 {[
+                  ...(kind === "MARKET"
+                    ? [{
+                        label: `Oracle Price (${pair.quoteToken.name}/${pair.baseToken.name})`,
+                        value: marketOraclePrice !== null
+                          ? `${parseFloat(formatUnits(marketOraclePrice, ORACLE_DECIMALS)).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${pair.quoteToken.name}`
+                          : oracleError
+                            ? "—"
+                            : "Loading…",
+                        cls: "text-on-surface font-tabular",
+                      }]
+                    : []),
                   {
                     label: "Est. Output",
                     value: `${formatted.estOutput || ""} ${tokenOut.name}`,
                     cls: "text-on-surface font-tabular font-medium",
                   },
                   {
-                    label: "Min. Output (0.5%)",
+                    label: `Min. Output (${slippage}%)`,
                     value: `${formatted.minOut || ""} ${tokenOut.name}`,
                     cls: "text-on-surface font-tabular",
                   },
@@ -453,6 +602,12 @@ export default function StrategyPage() {
                   {errorMessage.slice(0, 160)}
                 </div>
               )}
+              {kind === "MARKET" && oracleError && !isSuccess && (
+                <div className="mt-3 flex items-center gap-2 text-xs text-error">
+                  <AlertCircle size={13} />
+                  Oracle unavailable: {oracleError.slice(0, 140)}
+                </div>
+              )}
               {gasShortfall && !isSuccess && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
                   <AlertCircle size={13} />
@@ -480,7 +635,15 @@ export default function StrategyPage() {
                   variant="sovereign"
                   size="md"
                   className="w-full sm:w-auto"
-                  disabled={!isConnected || busy || amountBig === BigInt(0) || priceBig === BigInt(0) || isSuccess || gasShortfall}
+                  disabled={
+                    !isConnected
+                    || busy
+                    || amountBig === BigInt(0)
+                    || isSuccess
+                    || gasShortfall
+                    || (kind === "LIMIT"  && priceBig === BigInt(0))
+                    || (kind === "MARKET" && marketOraclePrice === null)
+                  }
                   onClick={handleSubmit}
                 >
                   {busy
