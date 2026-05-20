@@ -44,6 +44,12 @@ const (
 const (
 	KindOrderFill CommitmentKind = "ORDER_FILL"
 	KindDCA       CommitmentKind = "DCA"
+	// KindMarket is a backend-only orchestration flag: on-chain the commitment
+	// is still kind=0 (ORDER_FILL) with a sentinel price that trivially fills.
+	// The monitor goroutine fires the keeper trigger immediately rather than
+	// polling Chainlink. Stored in pending_strategies for dashboard visibility;
+	// translated to ORDER_FILL on the wire when forwarded to the keeper.
+	KindMarket CommitmentKind = "MARKET"
 )
 
 // ExecutionRecord is an anonymized on-chain event record.

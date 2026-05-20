@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/zstrategy/backend/internal/domain"
+	"github.com/zstrategy/backend/internal/infrastructure/metrics"
 )
 
 // registryPriceFeedABI exposes CommitmentRegistry.priceFeeds(address) → address.
@@ -56,6 +57,13 @@ type executeRequest struct {
 	ScheduledHi    *int64  `json:"scheduledHi"`
 }
 
+// trackedMonitor pairs a goroutine's cancel func with the strategy kind so we
+// can decrement the right Prometheus gauge label when monitoring stops.
+type trackedMonitor struct {
+	cancel context.CancelFunc
+	kind   domain.CommitmentKind
+}
+
 type MonitorService struct {
 	repo            domain.StrategyRepository
 	ethClient       *ethclient.Client
@@ -68,7 +76,7 @@ type MonitorService struct {
 	httpClient      *http.Client
 
 	mu        sync.Mutex
-	stopChans map[string]context.CancelFunc
+	stopChans map[string]trackedMonitor
 
 	// rootCtx is the long-lived context goroutines should be derived from. It
 	// is set by RehydrateFromDB at startup. Per-request contexts (e.g. from a
@@ -106,7 +114,7 @@ func NewMonitorService(
 		keeperURL:       keeperURL,
 		keeperAPISecret: keeperAPISecret,
 		httpClient:      &http.Client{Timeout: 10 * time.Second},
-		stopChans:       make(map[string]context.CancelFunc),
+		stopChans:       make(map[string]trackedMonitor),
 	}
 }
 
@@ -179,9 +187,10 @@ func (m *MonitorService) StartMonitoring(ctx context.Context, s *domain.PendingS
 func (m *MonitorService) StopMonitoring(commitmentHash string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cancel, ok := m.stopChans[commitmentHash]; ok {
-		cancel()
+	if tm, ok := m.stopChans[commitmentHash]; ok {
+		tm.cancel()
 		delete(m.stopChans, commitmentHash)
+		metrics.PendingStrategies.WithLabelValues(string(tm.kind)).Dec()
 	}
 }
 
@@ -210,7 +219,8 @@ func (m *MonitorService) startMonitoring(ctx context.Context, s *domain.PendingS
 		parent = ctx
 	}
 	childCtx, cancel := context.WithCancel(parent)
-	m.stopChans[s.CommitmentHash] = cancel
+	m.stopChans[s.CommitmentHash] = trackedMonitor{cancel: cancel, kind: s.Kind}
+	metrics.PendingStrategies.WithLabelValues(string(s.Kind)).Inc()
 
 	go m.monitorLoop(childCtx, s)
 }
@@ -241,6 +251,10 @@ func (m *MonitorService) monitorLoop(ctx context.Context, s *domain.PendingStrat
 }
 
 func (m *MonitorService) evaluateAndMaybeTrigger(ctx context.Context, s *domain.PendingStrategy) {
+	evalStart := time.Now()
+	defer func() {
+		metrics.MonitorEvalDuration.WithLabelValues(string(s.Kind)).Observe(time.Since(evalStart).Seconds())
+	}()
 	now := time.Now().Unix()
 
 	// Check expiry.
@@ -272,6 +286,14 @@ func (m *MonitorService) evaluateAndMaybeTrigger(ctx context.Context, s *domain.
 }
 
 func (m *MonitorService) isFillConditionMet(ctx context.Context, s *domain.PendingStrategy, now int64) (bool, error) {
+	if s.Kind == domain.KindMarket {
+		// MARKET: fires on first goroutine tick. No oracle poll, no time window —
+		// the on-chain commitment uses a sentinel limit price (u64.max for BUY,
+		// 0 for SELL) that trivially satisfies the circuit's fill check; the
+		// keeper still does its own oracle re-verify and will see the same
+		// trivial pass.
+		return true, nil
+	}
 	if s.Kind == domain.KindDCA {
 		if s.ScheduledLo == nil || s.ScheduledHi == nil {
 			return false, nil
@@ -414,9 +436,16 @@ func (m *MonitorService) callChainlinkFeed(ctx context.Context, feedAddr common.
 }
 
 func (m *MonitorService) triggerKeeper(s *domain.PendingStrategy) {
+	// On the wire, MARKET is indistinguishable from ORDER_FILL: same circuit,
+	// same verifier, same on-chain kind=0. The keeper's oracle re-verify
+	// trivially passes against the sentinel limit price.
+	wireKind := s.Kind
+	if wireKind == domain.KindMarket {
+		wireKind = domain.KindOrderFill
+	}
 	payload := executeRequest{
 		CommitmentHash: s.CommitmentHash,
-		Kind:           string(s.Kind),
+		Kind:           string(wireKind),
 		TokenIn:        s.TokenIn,
 		TokenOut:       s.TokenOut,
 		Size:           s.Size,
@@ -448,12 +477,14 @@ func (m *MonitorService) triggerKeeper(s *domain.PendingStrategy) {
 	}
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
+		metrics.KeeperTriggerTotal.WithLabelValues("error").Inc()
 		log.Printf("[Monitor] POST %s failed for %s...: %v", url, s.CommitmentHash[:10], err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK {
+		metrics.KeeperTriggerTotal.WithLabelValues("accepted").Inc()
 		log.Printf("[Monitor] keeper accepted trigger for %s... (status=%d)", s.CommitmentHash[:10], resp.StatusCode)
 		return
 	}
@@ -462,6 +493,7 @@ func (m *MonitorService) triggerKeeper(s *domain.PendingStrategy) {
 	// unavailable). The execution did NOT happen on-chain — reset to PENDING
 	// and resume monitoring so the next tick can retry. Without this, the row
 	// would sit in EXECUTING until the periodic sweeper picks it up.
+	metrics.KeeperTriggerTotal.WithLabelValues("rejected").Inc()
 	log.Printf("[Monitor] keeper rejected trigger for %s... (status=%d) — resuming monitor", s.CommitmentHash[:10], resp.StatusCode)
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

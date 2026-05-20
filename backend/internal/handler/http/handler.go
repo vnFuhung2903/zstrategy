@@ -182,7 +182,7 @@ func (h *Handler) RegisterStrategy(c *gin.Context) {
 	}
 
 	kind := domain.CommitmentKind(body.Kind)
-	if kind != domain.KindDCA {
+	if kind != domain.KindDCA && kind != domain.KindMarket {
 		kind = domain.KindOrderFill
 	}
 	limitPrice := body.LimitPrice

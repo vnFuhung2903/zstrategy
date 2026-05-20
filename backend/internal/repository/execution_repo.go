@@ -59,6 +59,20 @@ func (r *ExecutionRepo) ExistsByHash(ctx context.Context, commitmentHash string)
 	return count > 0, err
 }
 
+func (r *ExecutionRepo) FindByHash(ctx context.Context, commitmentHash string) (*domain.ExecutionRecord, error) {
+	var rec domain.ExecutionRecord
+	err := r.db.WithContext(ctx).
+		Where("commitment_hash = ?", commitmentHash).
+		First(&rec).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find by hash: %w", err)
+	}
+	return &rec, nil
+}
+
 func (r *ExecutionRepo) GetStatistics(ctx context.Context, chainID int64) (*domain.Statistics, error) {
 	type row struct {
 		Status string

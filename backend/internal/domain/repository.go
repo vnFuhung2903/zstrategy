@@ -23,6 +23,9 @@ type ExecutionRepository interface {
 	Save(ctx context.Context, r *ExecutionRecord) error
 	UpdateStatus(ctx context.Context, commitmentHash string, status ExecutionStatus, txHash string, blockNumber, gasUsed uint64, executedAt *time.Time) error
 	ExistsByHash(ctx context.Context, commitmentHash string) (bool, error)
+	// FindByHash returns nil if no row matches. Used by the metrics path to
+	// attach the original `kind` label to terminal-state counters.
+	FindByHash(ctx context.Context, commitmentHash string) (*ExecutionRecord, error)
 	GetStatistics(ctx context.Context, chainID int64) (*Statistics, error)
 	List(ctx context.Context, chainID int64, kind string, limit, offset int) ([]*ExecutionRecord, error)
 }
