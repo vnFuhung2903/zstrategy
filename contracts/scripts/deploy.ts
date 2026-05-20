@@ -130,9 +130,8 @@ async function main() {
     const routerAddr = process.env.UNISWAP_ROUTER_ADDRESS;
     if (!routerAddr || !ethers.isAddress(routerAddr)) throw new Error("UNISWAP_ROUTER_ADDRESS is required");
     const feeTier      = parseInt(process.env.UNISWAP_FEE_TIER ?? "500");
-    const deadlineBuf  = parseInt(process.env.SWAP_DEADLINE_BUFFER ?? "300");
     const AdapterF = await ethers.getContractFactory("UniswapV3Adapter");
-    const c = await AdapterF.deploy(routerAddr, feeTier, deadlineBuf);
+    const c = await AdapterF.deploy(routerAddr, feeTier);
     await c.waitForDeployment();
     return c.getAddress();
   });
