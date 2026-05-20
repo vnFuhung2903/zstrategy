@@ -8,6 +8,12 @@ import { reconstructUserSecret } from "../threshold/reconstruct";
 import { fetchPairPrice } from "../chain/oracle";
 import { submitExecution } from "../execution/submitter";
 import { OrderKind, Direction } from "../types";
+import {
+  registry as metricsRegistry,
+  executionsTotal,
+  shamirReconstructionSeconds,
+  httpRequestsTotal,
+} from "../metrics";
 
 const app = express();
 app.use(express.json({ limit: config.apiBodyLimit }));
@@ -18,6 +24,25 @@ app.use((_req, res, next) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (_req.method === "OPTIONS") { res.sendStatus(204); return; }
   next();
+});
+
+// Request counter middleware — runs for every request, including /metrics
+// itself. `req.route?.path` is set by Express after route matching; we fall
+// back to `req.path` for the metrics endpoint or unmatched 404s. Status is
+// recorded once the response is finished.
+app.use((req, res, next) => {
+  res.on("finish", () => {
+    const route = req.route?.path ?? req.path ?? "unknown";
+    httpRequestsTotal.labels(req.method, route, String(res.statusCode)).inc();
+  });
+  next();
+});
+
+// Prometheus scrape endpoint. Public (no auth) so Prometheus running in
+// docker-compose can pull without sharing the API_SECRET.
+app.get("/metrics", async (_req: Request, res: Response) => {
+  res.set("Content-Type", metricsRegistry.contentType);
+  res.end(await metricsRegistry.metrics());
 });
 
 // ── Auth middleware ─────────────────────────────────────────────────────────
@@ -231,9 +256,12 @@ app.post("/api/execute", requireSecret, async (req: Request, res: Response) => {
 
   // ── Reconstruct user_secret ───────────────────────────────────────────────
   let userSecret: string;
+  const reconstructEnd = shamirReconstructionSeconds.startTimer();
   try {
     userSecret = await reconstructUserSecret(commitmentHash);
+    reconstructEnd();
   } catch (err) {
+    reconstructEnd();
     console.error(`[API] reconstruct failed for ${commitmentHash.slice(0, 10)}...: ${err}`);
     res.status(500).json({ error: `Reconstruction failed: ${err}` });
     return;
@@ -263,9 +291,13 @@ app.post("/api/execute", requireSecret, async (req: Request, res: Response) => {
     scheduledHi: typeof scheduledHi === "number" ? scheduledHi : undefined,
     userSecret,
   })
-    .then(() => { state.executedCount++; })
+    .then(() => {
+      state.executedCount++;
+      executionsTotal.labels("success").inc();
+    })
     .catch(err => {
       state.failedCount++;
+      executionsTotal.labels("failed").inc();
       console.error(`[API] execute failed for ${commitmentHash.slice(0, 10)}...: ${err}`);
     });
 });
