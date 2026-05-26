@@ -27,6 +27,7 @@ export const FEE_OVERRIDES = {
 
 export const config = createConfig({
   chains: [arbitrumSepolia],
+  ssr: true,
   connectors: [
     injected(),
     ...(projectId ? [walletConnect({ projectId })] : []),
