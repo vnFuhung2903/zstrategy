@@ -76,15 +76,21 @@ type KindBreakdown struct {
 }
 
 type Statistics struct {
-	ChainID          int64                     `json:"chain_id"`
-	TotalRegistered  int64                     `json:"total_registered"`
-	TotalExecutions  int64                     `json:"total_executions"`
-	TotalCancelled   int64                     `json:"total_cancelled"`
-	TotalExpired     int64                     `json:"total_expired"`
-	SuccessRate      float64                   `json:"success_rate"`
-	AvgLatencyMs     float64                   `json:"avg_latency_ms"`
-	AvgGasUsed       float64                   `json:"avg_gas_used"`
-	ByKind           map[string]*KindBreakdown `json:"by_kind"`
+	ChainID         int64                     `json:"chain_id"`
+	TotalRegistered int64                     `json:"total_registered"`
+	TotalExecutions int64                     `json:"total_executions"`
+	TotalCancelled  int64                     `json:"total_cancelled"`
+	TotalExpired    int64                     `json:"total_expired"`
+	SuccessRate     float64                   `json:"success_rate"`
+	AvgLatencyMs    float64                   `json:"avg_latency_ms"`
+	AvgGasUsed      float64                   `json:"avg_gas_used"`
+	ByKind          map[string]*KindBreakdown `json:"by_kind"`
+}
+
+type ExecutionFilters struct {
+	Query  string
+	Status ExecutionStatus
+	Kind   CommitmentKind
 }
 
 type KeeperHealth struct {

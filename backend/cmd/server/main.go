@@ -50,10 +50,10 @@ func main() {
 	pingCancel()
 
 	// ── Dependency wiring ─────────────────────────────────────────────────────
-	execRepo     := repository.NewExecutionRepo(db)
+	execRepo := repository.NewExecutionRepo(db)
 	strategyRepo := repository.NewStrategyRepo(db)
-	indexerSvc   := service.NewIndexerService(execRepo, cfg.KeeperURL, cfg.KeeperAPISecret)
-	statsSvc     := service.NewStatsService(execRepo, strategyRepo, redisClient, cfg.KeeperURL)
+	indexerSvc := service.NewIndexerService(execRepo, strategyRepo, cfg.KeeperURL, cfg.KeeperAPISecret)
+	statsSvc := service.NewStatsService(execRepo, strategyRepo, redisClient, cfg.KeeperURL)
 
 	// ── Ethereum client (shared between indexer and monitor) ──────────────────
 	var ethClient *ethclient.Client

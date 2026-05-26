@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
+	"fmt"
 	"github.com/redis/go-redis/v9"
 	"github.com/zstrategy/backend/internal/domain"
-	"fmt"
 )
 
 const statsCacheTTL = 30 * time.Second
@@ -53,11 +53,11 @@ func (s *StatsService) GetStatistics(ctx context.Context, chainID int64) (*domai
 	return stats, nil
 }
 
-func (s *StatsService) GetExecutions(ctx context.Context, chainID int64, kind string, limit, offset int) ([]*domain.ExecutionRecord, error) {
+func (s *StatsService) GetExecutions(ctx context.Context, chainID int64, filters domain.ExecutionFilters, limit, offset int) ([]*domain.ExecutionRecord, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	return s.repo.List(ctx, chainID, kind, limit, offset)
+	return s.repo.List(ctx, chainID, filters, limit, offset)
 }
 
 func (s *StatsService) GetKeeperHealth(ctx context.Context) (*domain.KeeperHealth, error) {
