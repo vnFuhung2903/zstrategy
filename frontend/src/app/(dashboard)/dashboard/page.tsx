@@ -1,240 +1,172 @@
 "use client";
 
-import { Topbar } from "@/components/layout/Topbar";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { StatusChip } from "@/components/ui/StatusChip";
-import { TrendingUp, Shield, Zap, Clock, Plus, Loader2, WifiOff } from "lucide-react";
-import { useStats, useExecutions, useKeeperHealth } from "@/hooks/useBackendApi";
-import { formatDistanceToNow } from "@/lib/timeUtils";
-import { MyStrategies } from "@/components/MyStrategies";
 import Link from "next/link";
+import { Activity, ArrowRight, Clock, Database, DollarSign, Plus, Repeat2, Shield, TrendingUp, Wallet, WifiOff } from "lucide-react";
+import { Topbar } from "@/components/layout/Topbar";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { useStats } from "@/hooks/useBackendApi";
+import { useVaultTvl } from "@/hooks/useVaultTvl";
+import { formatUSD } from "@/lib/utils";
 
-function StatSkeleton() {
-  return <div className="h-16 rounded-sm bg-surface-container-high animate-pulse" />;
+function MetricSkeleton() {
+  return <div className="h-24 rounded-sm bg-surface-container-high animate-pulse" />;
+}
+
+function metricValue(value: number | undefined, fallback = "0") {
+  return value === undefined ? fallback : value.toLocaleString("en-US");
 }
 
 export default function DashboardPage() {
   const { data: stats, isLoading: statsLoading, isError: statsError } = useStats();
-  const { data: execData, isLoading: execLoading }                    = useExecutions(5, 0);
-  const { data: keeper, isLoading: keeperLoading }                    = useKeeperHealth();
+  const vaultTvl = useVaultTvl();
 
-  const executions = execData?.data ?? [];
+  const settled = stats
+    ? stats.total_executions + stats.total_cancelled + stats.total_expired
+    : 0;
+  const orderFillCount = stats?.by_kind?.ORDER_FILL?.total_registered ?? 0;
+  const marketCount = stats?.by_kind?.MARKET?.total_registered ?? 0;
+  const dcaCount = stats?.by_kind?.DCA?.total_registered ?? 0;
 
-  const statCards = stats
+  const metrics = stats
     ? [
-        { label: "Total Executions",  value: String(stats.total_executions), change: "All time",               up: null  },
-        { label: "Success Rate",      value: `${stats.success_rate.toFixed(1)}%`, change: "Executed / total",  up: stats.success_rate >= 95 },
-        { label: "Avg. Latency",      value: `${(stats.avg_latency_ms / 1000).toFixed(1)}s`, change: "Keeper → on-chain", up: null },
-        { label: "Avg. Gas Used",     value: String(stats.avg_gas_used),     change: "Per execution",           up: null  },
+        { label: "Registered", value: metricValue(stats.total_registered), detail: "All commitments", icon: Database },
+        { label: "Settled", value: metricValue(settled), detail: "Executed / cancelled / expired", icon: Shield },
+        { label: "Success Rate", value: `${stats.success_rate.toFixed(1)}%`, detail: "Executed / settled", icon: TrendingUp },
+        { label: "Avg. Latency", value: `${(stats.avg_latency_ms / 1000).toFixed(1)}s`, detail: "Registration to execution", icon: Clock },
       ]
-    : null;
+    : [];
 
   return (
     <>
       <Topbar title="Command Center" />
-      <div className="p-4 md:p-6 space-y-4 md:space-y-6">
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {statsLoading
-            ? Array.from({ length: 4 }).map((_, i) => <StatSkeleton key={i} />)
-            : statsError
-              ? (
-                <div className="col-span-2 lg:col-span-4 flex items-center gap-2 text-xs text-on-surface-variant p-3 rounded-sm bg-surface-container border border-outline-variant/10">
-                  <WifiOff size={13} />
-                  Backend offline — showing cached data
-                </div>
-              )
-              : statCards!.map((stat) => (
-                <Card key={stat.label} className="p-3 md:p-4">
-                  <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-1.5 md:mb-2">
-                    {stat.label}
-                  </p>
-                  <p className="font-display text-xl md:text-2xl font-semibold text-on-surface font-tabular">
-                    {stat.value}
-                  </p>
-                  <div className="flex items-center gap-1 mt-1">
-                    {stat.up === true && <TrendingUp size={11} className="text-primary-container" />}
-                    <span className={`text-xs ${stat.up === true ? "text-primary-container" : "text-on-surface-variant"}`}>
-                      {stat.change}
-                    </span>
-                  </div>
-                </Card>
-              ))
-          }
-        </div>
-
-        {/* My local strategies (IndexedDB-backed; cancel + self-execute live here) */}
-        <MyStrategies />
+      <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-7xl">
+        {(statsError || vaultTvl.isError) && (
+          <div className="flex items-center gap-2 text-xs text-on-surface-variant p-3 rounded-sm bg-surface-container border border-outline-variant/10">
+            <WifiOff size={13} />
+            Some overview data is unavailable
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Executions table */}
-          <div className="lg:col-span-2">
-            <Card>
-              <CardHeader>
-                <div className="flex items-start sm:items-center justify-between gap-3">
-                  <div>
-                    <CardTitle>Recent Commitments</CardTitle>
-                    <CardDescription>On-chain execution records</CardDescription>
-                  </div>
-                  <Link href="/orders">
-                    <Button variant="primary" size="sm" className="shrink-0">
-                      <Plus size={14} />
-                      <span className="hidden sm:inline">New Order</span>
-                      <span className="sm:hidden">New</span>
-                    </Button>
-                  </Link>
+          <Link href="/vault" className="lg:col-span-2 group">
+            <Card className="h-full p-4 md:p-5 transition-colors group-hover:border-primary-container/30">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">
+                    Global Vault TVL
+                  </p>
+                  <p className="font-display text-3xl md:text-4xl font-semibold text-on-surface font-tabular">
+                    {vaultTvl.isLoading ? "..." : formatUSD(vaultTvl.totalUsd)}
+                  </p>
+                  <p className="text-xs text-on-surface-variant mt-2">
+                    Supported collateral held by the vault contract
+                  </p>
                 </div>
-              </CardHeader>
-              <CardContent className="p-0">
-                {execLoading ? (
-                  <div className="flex items-center justify-center py-10 text-on-surface-variant">
-                    <Loader2 size={16} className="animate-spin mr-2" />
-                    Loading…
+                <div className="w-10 h-10 rounded-sm bg-primary-container/10 text-primary-container flex items-center justify-center shrink-0">
+                  <DollarSign size={18} />
+                </div>
+              </div>
+              <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {vaultTvl.tokenValues.map((token) => (
+                  <div key={token.symbol} className="p-2 rounded-sm bg-surface-container-high">
+                    <p className="text-xs text-on-surface-variant">{token.symbol}</p>
+                    <p className="text-sm text-on-surface font-tabular">
+                      {token.valueUsd > 0 ? formatUSD(token.valueUsd) : "$0.00"}
+                    </p>
                   </div>
-                ) : executions.length === 0 ? (
-                  <p className="text-xs text-on-surface-variant text-center py-10">No executions yet</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs md:text-sm min-w-[500px]">
-                      <thead>
-                        <tr className="border-b border-outline-variant/10">
-                          {["Commitment", "Chain", "Status", "Gas Used", "Time"].map((h) => (
-                            <th key={h} className="text-left px-3 md:px-4 py-2 text-xs text-on-surface-variant uppercase tracking-widest font-medium whitespace-nowrap">
-                              {h}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {executions.map((e) => (
-                          <tr key={e.id} className="border-b border-outline-variant/5 hover:bg-surface-container-high/50 transition-colors">
-                            <td className="px-3 md:px-4 py-3 font-tabular text-on-surface-variant text-xs">
-                              {e.commitment_hash.slice(0, 6)}…{e.commitment_hash.slice(-4)}
-                            </td>
-                            <td className="px-3 md:px-4 py-3 text-on-surface-variant text-xs whitespace-nowrap">
-                              {e.chain_id === 421614 ? "Arb Sepolia" : `Chain ${e.chain_id}`}
-                            </td>
-                            <td className="px-3 md:px-4 py-3 whitespace-nowrap">
-                              <StatusChip status={e.status} />
-                            </td>
-                            <td className="px-3 md:px-4 py-3 text-on-surface font-tabular whitespace-nowrap">
-                              {e.gas_used > 0 ? e.gas_used.toLocaleString() : "—"}
-                            </td>
-                            <td className="px-3 md:px-4 py-3 text-on-surface-variant text-xs whitespace-nowrap">
-                              {formatDistanceToNow(e.registered_at)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </CardContent>
+                ))}
+              </div>
             </Card>
-          </div>
+          </Link>
 
-          {/* Side cards */}
-          <div className="flex flex-col gap-4">
-            {/* Keeper health */}
-            <Card variant="trust">
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm">Keeper Node</CardTitle>
-                  {keeperLoading ? (
-                    <Loader2 size={12} className="animate-spin text-on-surface-variant" />
-                  ) : (
-                    <Badge variant={keeper?.online ? "primary" : "error"} dot>
-                      {keeper?.online ? "Online" : "Offline"}
-                    </Badge>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2 text-sm">
-                  {[
-                    { label: "Monitoring", value: keeper ? `${keeper.monitored_count} commitments` : "—" },
-                    { label: "Executed",   value: keeper ? String(keeper.executed_count) : "—" },
-                    { label: "Failed",     value: keeper ? String(keeper.failed_count)   : "—" },
-                    { label: "Last seen",  value: keeper?.last_seen_at ? formatDistanceToNow(keeper.last_seen_at) : "—" },
-                  ].map(({ label, value }) => (
-                    <div key={label} className="flex justify-between">
-                      <span className="text-on-surface-variant">{label}</span>
-                      <span className="text-on-surface font-medium">{value}</span>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+          <Card className="p-4 md:p-5">
+            <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-3">
+              Quick Actions
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <Link href="/orders">
+                <Button variant="primary" size="sm" className="w-full">
+                  <Plus size={14} />
+                  Order
+                </Button>
+              </Link>
+              <Link href="/dca">
+                <Button variant="sovereign" size="sm" className="w-full">
+                  <Repeat2 size={14} />
+                  DCA
+                </Button>
+              </Link>
+              <Link href="/vault">
+                <Button variant="ghost" size="sm" className="w-full">
+                  <Wallet size={14} />
+                  Vault
+                </Button>
+              </Link>
+              <Link href="/activity">
+                <Button variant="ghost" size="sm" className="w-full">
+                  <Activity size={14} />
+                  Activity
+                </Button>
+              </Link>
+            </div>
+          </Card>
+        </div>
 
-            {/* ZK Privacy */}
-            <Card variant="trust-violet">
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Shield size={14} className="text-secondary" />
-                  ZK Privacy
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2 text-sm">
-                  {[
-                    { label: "Proofs generated",   value: stats ? String(stats.total_executions) : "—" },
-                    { label: "Avg. proof latency", value: stats ? `${(stats.avg_latency_ms / 1000).toFixed(1)}s` : "—" },
-                    { label: "Circuits",           value: "OrderFill + DCA (UltraHonk)" },
-                  ].map(({ label, value }) => (
-                    <div key={label} className="flex justify-between">
-                      <span className="text-on-surface-variant">{label}</span>
-                      <span className="text-on-surface font-medium">{value}</span>
-                    </div>
-                  ))}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {statsLoading
+            ? Array.from({ length: 4 }).map((_, i) => <MetricSkeleton key={i} />)
+            : metrics.map(({ label, value, detail, icon: Icon }) => (
+              <Card key={label} className="p-3 md:p-4">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <p className="text-xs text-on-surface-variant uppercase tracking-widest">{label}</p>
+                  <Icon size={14} className="text-on-surface-variant" />
                 </div>
-                <div className="mt-3 flex items-center gap-1.5">
-                  <Zap size={12} className="text-secondary" />
-                  <span className="text-xs text-secondary uppercase tracking-widest">Flashbots Protected</span>
-                </div>
-              </CardContent>
-            </Card>
+                <p className="font-display text-xl md:text-2xl font-semibold text-on-surface font-tabular">
+                  {value}
+                </p>
+                <p className="text-xs text-on-surface-variant mt-1">{detail}</p>
+              </Card>
+            ))}
+        </div>
 
-            {/* Recent executions mini list */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Clock size={14} className="text-on-surface-variant" />
-                  Recent Executions
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {execLoading ? (
-                  <div className="space-y-3">
-                    {[1,2,3].map(i => <div key={i} className="h-8 rounded-sm bg-surface-container-high animate-pulse" />)}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <Card className="lg:col-span-2">
+            <CardHeader>
+              <CardTitle>Strategy Mix</CardTitle>
+              <CardDescription>Public commitment classes indexed by the backend</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: "Order Fill", value: orderFillCount },
+                  { label: "Market", value: marketCount },
+                  { label: "DCA", value: dcaCount },
+                ].map((item) => (
+                  <div key={item.label} className="p-3 rounded-sm bg-surface-container-high">
+                    <p className="text-xs text-on-surface-variant">{item.label}</p>
+                    <p className="text-lg font-semibold font-tabular text-on-surface">{item.value}</p>
                   </div>
-                ) : executions.length === 0 ? (
-                  <p className="text-xs text-on-surface-variant text-center py-2">No executions yet</p>
-                ) : (
-                  <div className="space-y-3 text-sm">
-                    {executions.slice(0, 3).map((e) => (
-                      <div key={e.id} className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="font-tabular text-on-surface text-xs truncate">
-                            {e.commitment_hash.slice(0, 10)}…
-                          </p>
-                          <p className="text-xs text-on-surface-variant capitalize">{e.status}</p>
-                        </div>
-                        <span className="text-xs text-on-surface-variant shrink-0">
-                          {formatDistanceToNow(e.registered_at)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Link href="/activity" className="group">
+            <Card className="h-full p-4 transition-colors group-hover:border-primary-container/30">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-on-surface">Open Activity</p>
+                  <p className="text-xs text-on-surface-variant mt-1">
+                    Search anonymized commitments and transactions
+                  </p>
+                </div>
+                <ArrowRight size={16} className="text-on-surface-variant group-hover:text-primary-container" />
+              </div>
             </Card>
-          </div>
+          </Link>
         </div>
       </div>
     </>
   );
 }
-
