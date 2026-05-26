@@ -56,7 +56,7 @@ export function GasTankPanel() {
   }, [depositSuccess, depositHash, withdrawSuccess, withdrawHash, refetch]);
 
   const fmt = (raw: bigint | undefined) =>
-    raw === undefined ? "—" : parseFloat(formatEther(raw)).toLocaleString(undefined, { maximumFractionDigits: 6 });
+    raw === undefined ? "—" : parseFloat(formatEther(raw)).toLocaleString("en-US", { maximumFractionDigits: 6 });
 
   const estPerFill = parseFloat(formatEther(PER_EXECUTION_ETH_ESTIMATE));
   const estFillCount =

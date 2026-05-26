@@ -62,7 +62,7 @@ export function VaultPanel() {
 
   function fmt(raw: bigint | undefined) {
     if (raw === undefined) return "—";
-    return parseFloat(formatUnits(raw, token.decimals)).toLocaleString(undefined, { maximumFractionDigits: 6 });
+    return parseFloat(formatUnits(raw, token.decimals)).toLocaleString("en-US", { maximumFractionDigits: 6 });
   }
 
   function handleAction() {
