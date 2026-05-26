@@ -15,15 +15,17 @@ import (
 
 type IndexerService struct {
 	repo            domain.ExecutionRepository
+	strategyRepo    domain.StrategyRepository
 	Monitor         *MonitorService
 	keeperURL       string
 	keeperAPISecret string
 	httpClient      *http.Client
 }
 
-func NewIndexerService(repo domain.ExecutionRepository, keeperURL, keeperAPISecret string) *IndexerService {
+func NewIndexerService(repo domain.ExecutionRepository, strategyRepo domain.StrategyRepository, keeperURL, keeperAPISecret string) *IndexerService {
 	return &IndexerService{
 		repo:            repo,
+		strategyRepo:    strategyRepo,
 		keeperURL:       keeperURL,
 		keeperAPISecret: keeperAPISecret,
 		httpClient:      &http.Client{Timeout: 10 * time.Second},
@@ -64,7 +66,16 @@ func (s *IndexerService) HandleRegistered(ctx context.Context, commitmentHash, k
 		return nil
 	}
 	k := domain.CommitmentKind(kind)
-	if k != domain.KindDCA {
+	if s.strategyRepo != nil {
+		pending, err := s.strategyRepo.GetByHash(ctx, commitmentHash)
+		if err != nil {
+			return fmt.Errorf("lookup pending strategy kind: %w", err)
+		}
+		if pending != nil && pending.Kind == domain.KindMarket {
+			k = domain.KindMarket
+		}
+	}
+	if k != domain.KindDCA && k != domain.KindMarket {
 		k = domain.KindOrderFill
 	}
 	metrics.StrategiesRegistered.WithLabelValues(strconv.FormatInt(chainID, 10), string(k)).Inc()
@@ -75,6 +86,20 @@ func (s *IndexerService) HandleRegistered(ctx context.Context, commitmentHash, k
 		Kind:           k,
 		RegisteredAt:   blockTime,
 	})
+}
+
+func (s *IndexerService) UpdateExecutionKind(ctx context.Context, commitmentHash string, kind domain.CommitmentKind) error {
+	if kind != domain.KindMarket {
+		return nil
+	}
+	rec, err := s.repo.FindByHash(ctx, commitmentHash)
+	if err != nil || rec == nil {
+		return err
+	}
+	if rec.Kind == domain.KindMarket {
+		return nil
+	}
+	return s.repo.UpdateKind(ctx, commitmentHash, kind)
 }
 
 func (s *IndexerService) HandleExecuted(ctx context.Context, commitmentHash, txHash string, chainID int64, blockNumber, gasUsed uint64, blockTime time.Time) error {

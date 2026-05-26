@@ -50,6 +50,17 @@ func (r *ExecutionRepo) UpdateStatus(
 	return nil
 }
 
+func (r *ExecutionRepo) UpdateKind(ctx context.Context, commitmentHash string, kind domain.CommitmentKind) error {
+	err := r.db.WithContext(ctx).
+		Model(&domain.ExecutionRecord{}).
+		Where("commitment_hash = ?", commitmentHash).
+		Update("kind", kind).Error
+	if err != nil {
+		return fmt.Errorf("update kind: %w", err)
+	}
+	return nil
+}
+
 func (r *ExecutionRepo) ExistsByHash(ctx context.Context, commitmentHash string) (bool, error) {
 	var count int64
 	err := r.db.WithContext(ctx).
@@ -152,11 +163,18 @@ func (r *ExecutionRepo) GetStatistics(ctx context.Context, chainID int64) (*doma
 	return stats, nil
 }
 
-func (r *ExecutionRepo) List(ctx context.Context, chainID int64, kind string, limit, offset int) ([]*domain.ExecutionRecord, error) {
+func (r *ExecutionRepo) List(ctx context.Context, chainID int64, filters domain.ExecutionFilters, limit, offset int) ([]*domain.ExecutionRecord, error) {
 	var records []*domain.ExecutionRecord
 	q := r.db.WithContext(ctx).Where("chain_id = ?", chainID)
-	if kind != "" {
-		q = q.Where("kind = ?", kind)
+	if filters.Kind != "" {
+		q = q.Where("kind = ?", filters.Kind)
+	}
+	if filters.Status != "" {
+		q = q.Where("status = ?", filters.Status)
+	}
+	if filters.Query != "" {
+		pattern := "%" + filters.Query + "%"
+		q = q.Where("commitment_hash ILIKE ? OR tx_hash ILIKE ?", pattern, pattern)
 	}
 	err := q.Order("registered_at DESC").Limit(limit).Offset(offset).Find(&records).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {

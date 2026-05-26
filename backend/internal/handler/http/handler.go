@@ -64,11 +64,21 @@ func (h *Handler) GetStats(c *gin.Context) {
 // GET /api/v1/executions?chain_id=421614&kind=DCA&limit=20&offset=0
 func (h *Handler) ListExecutions(c *gin.Context) {
 	chainID := parseChainID(c)
-	kind := c.DefaultQuery("kind", "")
+	filters := domain.ExecutionFilters{
+		Query: strings.TrimSpace(c.DefaultQuery("q", "")),
+	}
+	if status := domain.ExecutionStatus(c.DefaultQuery("status", "")); status == domain.StatusRegistered ||
+		status == domain.StatusExecuted || status == domain.StatusCancelled || status == domain.StatusExpired {
+		filters.Status = status
+	}
+	if kind := domain.CommitmentKind(c.DefaultQuery("kind", "")); kind == domain.KindOrderFill ||
+		kind == domain.KindDCA || kind == domain.KindMarket {
+		filters.Kind = kind
+	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	records, err := h.stats.GetExecutions(c.Request.Context(), chainID, kind, limit, offset)
+	records, err := h.stats.GetExecutions(c.Request.Context(), chainID, filters, limit, offset)
 	if err != nil {
 		errResponse(c, err)
 		return
@@ -211,6 +221,11 @@ func (h *Handler) RegisterStrategy(c *gin.Context) {
 	if err := h.strategyRepo.Save(c.Request.Context(), s); err != nil {
 		errResponse(c, err)
 		return
+	}
+	if kind == domain.KindMarket && h.indexer != nil {
+		if err := h.indexer.UpdateExecutionKind(c.Request.Context(), body.CommitmentHash, domain.KindMarket); err != nil {
+			log.Printf("[Handler] update execution kind for MARKET %s: %v", body.CommitmentHash, err)
+		}
 	}
 
 	// Forward encrypted shares to keeper (fire-and-forget).
