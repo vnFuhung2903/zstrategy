@@ -81,8 +81,14 @@ export default function StrategyPage() {
   // estimated-output display and to compute minOut against the user-selected
   // slippage. Null until first fetch completes (or if the registry has no feed
   // for the pair, in which case MARKET submission is blocked).
-  const [marketOraclePrice, setMarketOraclePrice] = useState<bigint | null>(null);
-  const [oracleError, setOracleError] = useState<string | null>(null);
+  const marketOracleKey = `${chainId}:${pair.baseToken.address}:${pair.quoteToken.address}`;
+  const [marketOracle, setMarketOracle] = useState<{
+    key: string;
+    price: bigint | null;
+    error: string | null;
+  }>({ key: "", price: null, error: null });
+  const marketOraclePrice = marketOracle.key === marketOracleKey ? marketOracle.price : null;
+  const oracleError = marketOracle.key === marketOracleKey ? marketOracle.error : null;
   const [submitError, setSubmitError] = useState<string | null>(null);
   // Held until the on-chain registration confirms; only then do we POST to the
   // Go backend, so the chain is the source of truth before any off-chain row
@@ -93,7 +99,7 @@ export default function StrategyPage() {
   // Per-strategy nonce — generated once per page load. A fresh strategy gets a
   // fresh nonce; we persist it (alongside metadata) only when the user clicks
   // submit, so abandoned drafts don't pollute IndexedDB.
-  const nonceRef = useRef<`0x${string}`>(randomBytes32());
+  const nonceRef = useRef<`0x${string}` | null>(null);
 
   // Direction is just the user's side choice for both LIMIT and MARKET.
   //   BUY  → direction=0 → circuit requires oracle <= price
@@ -106,11 +112,6 @@ export default function StrategyPage() {
   const { data: gasBalance }     = useGasBalance();
   const { register, isPending, isConfirming, isSuccess, error } = useRegisterCommitment();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
-  const [formatted, setFormatted] = useState({
-    estOutput: "",
-    minOut: "",
-    expiry: "",
-  });
 
   // Keeper-gas precondition. We require ≥ 1 estimated fill in the tank before
   // accepting a new strategy — otherwise the keeper trigger will revert on
@@ -125,6 +126,11 @@ export default function StrategyPage() {
   useEffect(() => {
     nonceRef.current = randomBytes32();
   }, []);
+
+  function getDraftNonce(): `0x${string}` {
+    if (!nonceRef.current) nonceRef.current = randomBytes32();
+    return nonceRef.current;
+  }
 
   const amountBig = useMemo(() => {
     try { return parseUnits(amount || "0", tokenIn.decimals); }
@@ -175,7 +181,14 @@ export default function StrategyPage() {
     } catch { return BigInt(0); }
   }, [expectedOutFloat, slippage, tokenOut.decimals]);
 
-  const [now] = useState(() => Math.floor(Date.now() / 1000));
+  const [now, setNow] = useState<number | null>(null);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      setNow(Math.floor(Date.now() / 1000));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
 
   const expiry = useMemo(() => {
     if (!now) return null;
@@ -184,16 +197,18 @@ export default function StrategyPage() {
     return now + TIME_IN_FORCE[tif];
   }, [now, tif, kind]);
 
-  useEffect(() => {
-  if (!expiry) return;
-    setFormatted({
-      estOutput: expectedOutFloat.toLocaleString(undefined, {
+  const formatted = useMemo(() => {
+    if (!expiry) {
+      return { estOutput: "", minOut: "", expiry: "" };
+    }
+    return {
+      estOutput: expectedOutFloat.toLocaleString("en-US", {
         maximumFractionDigits: tokenOut.decimals === 18 ? 6 : 2,
       }),
       minOut: parseFloat(formatUnits(minOutBig, tokenOut.decimals))
-        .toLocaleString(undefined, { maximumFractionDigits: 6 }),
-      expiry: new Date(expiry * 1000).toLocaleDateString(),
-    });
+        .toLocaleString("en-US", { maximumFractionDigits: 6 }),
+      expiry: new Date(expiry * 1000).toLocaleDateString("en-US"),
+    };
   }, [expectedOutFloat, minOutBig, tokenOut.decimals, expiry]);
 
   // Live "quote per base" pair price — only used for MARKET orders. We read
@@ -209,13 +224,9 @@ export default function StrategyPage() {
   // trivially pass — the contract's _readOraclePrice operates on
   // tokenIn/tokenOut, not base/quote.
   useEffect(() => {
-    if (kind !== "MARKET" || !publicClient) {
-      setMarketOraclePrice(null);
-      setOracleError(null);
-      return;
-    }
+    if (kind !== "MARKET" || !publicClient) return;
     let cancelled = false;
-    setOracleError(null);
+    const queryKey = marketOracleKey;
 
     const registryAddr =
       ADDRESSES[chainId as keyof typeof ADDRESSES]?.commitmentRegistry
@@ -257,23 +268,20 @@ export default function StrategyPage() {
         const normBase  = answerBase  * 10n ** BigInt(18 - decBase);
         const normQuote = answerQuote * 10n ** BigInt(18 - decQuote);
         const quotePerBase = normBase * 10n ** BigInt(ORACLE_DECIMALS) / normQuote;
-        if (!cancelled) setMarketOraclePrice(quotePerBase);
+        if (!cancelled) setMarketOracle({ key: queryKey, price: quotePerBase, error: null });
       } catch (e) {
-        if (!cancelled) {
-          setMarketOraclePrice(null);
-          setOracleError(e instanceof Error ? e.message : String(e));
-        }
+        if (!cancelled) setMarketOracle({ key: queryKey, price: null, error: e instanceof Error ? e.message : String(e) });
       }
     })();
     return () => { cancelled = true; };
-  }, [kind, publicClient, chainId, pair.baseToken.address, pair.baseToken.name, pair.quoteToken.address, pair.quoteToken.name]);
+  }, [kind, publicClient, chainId, marketOracleKey, pair.baseToken.address, pair.baseToken.name, pair.quoteToken.address, pair.quoteToken.name]);
 
   async function handleSubmit() {
     if (!isConnected || !address || amountBig === BigInt(0) || priceBig === BigInt(0) || !expiry) return;
     setSubmitError(null);
 
     try {
-      const nonce = nonceRef.current;
+      const nonce = getDraftNonce();
       const strategyId = deriveStrategyId(address, nonce);
 
       // 1. Fetch keeper public-key set BEFORE asking the user to sign — if the
@@ -549,7 +557,7 @@ export default function StrategyPage() {
                     ? [{
                         label: `Oracle Price (${pair.quoteToken.name}/${pair.baseToken.name})`,
                         value: marketOraclePrice !== null
-                          ? `${parseFloat(formatUnits(marketOraclePrice, ORACLE_DECIMALS)).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${pair.quoteToken.name}`
+                          ? `${parseFloat(formatUnits(marketOraclePrice, ORACLE_DECIMALS)).toLocaleString("en-US", { maximumFractionDigits: 2 })} ${pair.quoteToken.name}`
                           : oracleError
                             ? "—"
                             : "Loading…",

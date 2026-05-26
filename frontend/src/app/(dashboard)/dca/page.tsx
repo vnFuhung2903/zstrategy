@@ -65,8 +65,13 @@ export default function DcaPage() {
   const tokenIn  = side === "BUY" ? pair.quoteToken : pair.baseToken;
   const tokenOut = side === "BUY" ? pair.baseToken  : pair.quoteToken;
 
-  const sharedNonceRef = useRef<`0x${string}`>(randomBytes32());
+  const sharedNonceRef = useRef<`0x${string}` | null>(null);
   useEffect(() => { sharedNonceRef.current = randomBytes32(); }, []);
+
+  function getSharedNonce(): `0x${string}` {
+    if (!sharedNonceRef.current) sharedNonceRef.current = randomBytes32();
+    return sharedNonceRef.current;
+  }
 
   // Reset minOut when pair or side changes — output token and decimals differ.
   // useEffect(() => { setMinOutInput(""); }, [pair, side]);
@@ -89,15 +94,26 @@ export default function DcaPage() {
   const sizeBig    = useMemo(() => { try { return parseUnits(sizeInput || "0", tokenIn.decimals); } catch { return BigInt(0); } }, [sizeInput, tokenIn.decimals]);
   const totalSpend = useMemo(() => sizeBig * BigInt(roundCount), [sizeBig, roundCount]);
 
-  const [now] = useState(() => Math.floor(Date.now() / 1000));
-  const schedule = useMemo(() => buildSchedule(roundCount, interval, now), [roundCount, interval, now]);
+  const [now, setNow] = useState<number | null>(null);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      setNow(Math.floor(Date.now() / 1000));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  const schedule = useMemo(
+    () => now === null ? [] : buildSchedule(roundCount, interval, now),
+    [roundCount, interval, now],
+  );
 
   async function handleSubmit() {
     if (!isConnected || !address || sizeBig === BigInt(0)) return;
     setSubmitError(null);
 
     try {
-      const sharedNonce = sharedNonceRef.current;
+      const sharedNonce = getSharedNonce();
       const strategyId  = deriveStrategyId(address, sharedNonce);
 
       const { keepers } = await keeperApi.listKeepers();
@@ -197,7 +213,7 @@ export default function DcaPage() {
   const errorMessage = submitError ?? (error ? (error as Error).message : null);
 
   const fmt = (ts: number) =>
-    new Date(ts * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    new Date(ts * 1000).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
   return (
     <>
@@ -289,9 +305,9 @@ export default function DcaPage() {
               {/* Summary */}
               <div className="bg-surface-container-lowest rounded-sm p-3 space-y-2 text-sm">
                 {[
-                  { label: "Total Spend",   value: `${parseFloat(fmtUnits(totalSpend, tokenIn.decimals)).toLocaleString(undefined, { maximumFractionDigits: tokenIn.decimals === 18 ? 6 : 2 })} ${tokenIn.name}` },
-                  { label: "First Round",   value: `${fmt(schedule[0].scheduledLo)} – ${fmt(schedule[0].scheduledHi)}` },
-                  { label: "Last Round",    value: `${fmt(schedule[schedule.length - 1].scheduledLo)} – ${fmt(schedule[schedule.length - 1].scheduledHi)}` },
+                  { label: "Total Spend",   value: `${parseFloat(fmtUnits(totalSpend, tokenIn.decimals)).toLocaleString("en-US", { maximumFractionDigits: tokenIn.decimals === 18 ? 6 : 2 })} ${tokenIn.name}` },
+                  { label: "First Round",   value: schedule.length ? `${fmt(schedule[0].scheduledLo)} – ${fmt(schedule[0].scheduledHi)}` : "—" },
+                  { label: "Last Round",    value: schedule.length ? `${fmt(schedule[schedule.length - 1].scheduledLo)} – ${fmt(schedule[schedule.length - 1].scheduledHi)}` : "—" },
                   { label: "Window Jitter", value: "±15% of interval" },
                 ].map(({ label, value }) => (
                   <div key={label} className="flex justify-between gap-2">
