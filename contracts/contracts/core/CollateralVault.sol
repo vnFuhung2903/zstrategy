@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title CollateralVault
 /// @notice Holds user collateral for zstrategy commitments.
@@ -14,14 +15,12 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 ///   registry.lock()       → free → locked (per commitment)
 ///   registry.release()    → locked transferred to DEX adapter for swap
 ///   registry.return()     → locked returned to free (on cancel / expiry)
-contract CollateralVault is ReentrancyGuard {
+contract CollateralVault is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
     // ── State ──────────────────────────────────────────────────────────────
 
     address public registry;
-    address public owner;
-
     /// @notice Free (unlocked) balance per user per token.
     mapping(address user => mapping(address token => uint256)) public freeBalance;
 
@@ -35,18 +34,16 @@ contract CollateralVault is ReentrancyGuard {
     event CollateralLocked(bytes32 indexed commitmentHash, address indexed token, uint256 amount);
     event CollateralReleased(bytes32 indexed commitmentHash, address indexed token, uint256 amount, address indexed to);
     event CollateralReturned(bytes32 indexed commitmentHash, address indexed user, address indexed token, uint256 amount);
+    event RegistryChanged(address indexed oldRegistry, address indexed newRegistry);
 
     // ── Constructor ────────────────────────────────────────────────────────
 
-    constructor() {
-        owner = msg.sender;
-    }
+    constructor() Ownable(msg.sender) {}
 
-    /// @notice Set the registry address once after deployment (breaks circular deploy dependency).
-    function setRegistry(address _registry) external {
-        require(msg.sender == owner,    "Vault: not owner");
-        require(registry == address(0), "Vault: registry already set");
+    /// @notice Set or update the registry allowed to move locked collateral.
+    function setRegistry(address _registry) external onlyOwner {
         require(_registry != address(0), "Vault: zero registry");
+        emit RegistryChanged(registry, _registry);
         registry = _registry;
     }
 

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title GasVault
 /// @notice Prepaid native-ETH balance per user. The CommitmentRegistry debits
@@ -15,13 +16,11 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 ///   user.deposit{value: X}()    → balanceOf[user] += X
 ///   registry.debit(user, kp, c) → balanceOf[user] -= cost; ETH → keeper
 ///   user.withdraw(amount)       → balanceOf[user] -= amount; ETH → user
-contract GasVault is ReentrancyGuard {
+contract GasVault is ReentrancyGuard, Ownable {
 
     // ── State ──────────────────────────────────────────────────────────────
 
     address public registry;
-    address public owner;
-
     /// @notice Prepaid gas balance per user, in wei.
     mapping(address user => uint256) public balanceOf;
 
@@ -35,19 +34,16 @@ contract GasVault is ReentrancyGuard {
         uint256         amount,
         bytes32 indexed commitmentHash
     );
+    event RegistryChanged(address indexed oldRegistry, address indexed newRegistry);
 
     // ── Constructor ────────────────────────────────────────────────────────
 
-    constructor() {
-        owner = msg.sender;
-    }
+    constructor() Ownable(msg.sender) {}
 
-    /// @notice Set the registry address once after deployment (breaks circular
-    ///         deploy dependency — same pattern as CollateralVault.setRegistry).
-    function setRegistry(address _registry) external {
-        require(msg.sender == owner,     "GasVault: not owner");
-        require(registry == address(0),  "GasVault: registry already set");
+    /// @notice Set or update the registry allowed to debit keeper gas.
+    function setRegistry(address _registry) external onlyOwner {
         require(_registry != address(0), "GasVault: zero registry");
+        emit RegistryChanged(registry, _registry);
         registry = _registry;
     }
 
