@@ -12,7 +12,7 @@ import { config } from "../config";
 // between the keeper and indexer views of chain state.
 
 const REGISTRY_ABI = [
-  "function executeCommitment(bytes32 commitmentHash, bytes32 nullifier, bytes calldata proof) external",
+  "function executeCommitment(bytes32 commitmentHash, bytes32 nullifier, bytes calldata proof, uint64 fillRef) external",
 ];
 
 /** Signer-connected registry for submitting `executeCommitment` transactions. */

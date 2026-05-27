@@ -59,7 +59,7 @@ export interface OrderFillWitness {
 
 /**
  * Generate the UltraHonk proof. Returns `0x`-prefixed hex bytes ready for
- * `CommitmentRegistry.executeCommitment(_, _, proof)`.
+ * `CommitmentRegistry.executeCommitment(_, _, proof, 0)`.
  */
 export async function generateOrderFillProof(
   inputs: OrderFillWitness,
