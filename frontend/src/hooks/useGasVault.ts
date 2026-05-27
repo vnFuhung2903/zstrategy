@@ -27,7 +27,7 @@ export function useGasBalance() {
   });
 }
 
-/** Top up the caller's gas tank. `amountEth` is a decimal string in ETH (e.g. "0.01"). */
+/** Top up the caller's gas tank. `amountEth` is a decimal string in ETH, e.g. "0.01". */
 export function useDepositGas() {
   const gasVault = useGasVaultAddress();
   const { writeContract, data: hash, isPending, error } = useWriteContract();
@@ -67,24 +67,22 @@ export function useWithdrawGas() {
 }
 
 // Per-execution cost estimate used to gate strategy submission in the UI.
-// The contract debits `gasUsed × tx.gasprice × KEEPER_PREMIUM_BPS / 10000`,
-// so the estimate must be the WORST plausible value of that product, not the
-// average — under-estimating leaves users with strategies that pass our UI
-// gate, trigger, and then revert on the actual debit.
+// The registry debits `GAS_ESTIMATE * tx.gasprice * 120%`.
+// Recent MARKET execution telemetry on Arbitrum Sepolia used 5,784,119 gas.
+// The exact billable amount would be 5,814,119 after adding the registry's
+// fixed 30,000 overhead, but the UI gate should not depend on one exact tx.
+// Round the billable gas up to 6,000,000 for a small operational buffer.
 //
-// Worst-case envelope (Arbitrum Sepolia under congestion):
-//   gas:       1,200,000  (UltraHonk verifier ~800k + swap + debit + events)
-//   gasPrice:  1 gwei     (= 1e9 wei; pessimistic vs ~0.01–0.1 gwei typical)
-//   premium:   1.2        (KEEPER_PREMIUM_BPS = 12000 / 10000 in the contract)
+// At 1 gwei:
+//   6,000,000 * 1e9 * 1.2 = 7,200,000,000,000,000 wei
+//   = 0.0072 ETH per fill
 //
-//   1_200_000 × 1e9 × 1.2 = 1,440,000,000,000,000 wei = 0.00144 ETH per fill
-//
-// A small DCA (10 rounds) needs ~0.0144 ETH prepaid — under $50 at current
-// ETH prices, low-friction for a user already moving collateral. Refine
-// downward once we have real fill telemetry from Arbitrum Sepolia.
-export const PER_EXECUTION_GAS_ESTIMATE     = 1_200_000n;
+// If the keeper submits with a 10 gwei buffered gas price, the same execution
+// needs 0.072 ETH. Keep PER_EXECUTION_GAS_PRICE_WEI aligned with the
+// keeper's effective tx.gasprice policy.
+export const PER_EXECUTION_GAS_ESTIMATE     = 6_000_000n;
 export const PER_EXECUTION_GAS_PRICE_WEI    = 1_000_000_000n;       // 1 gwei
 export const PER_EXECUTION_PREMIUM_BPS      = 12000n;               // 120%
 export const PER_EXECUTION_ETH_ESTIMATE =
   PER_EXECUTION_GAS_ESTIMATE * PER_EXECUTION_GAS_PRICE_WEI * PER_EXECUTION_PREMIUM_BPS / 10000n;
-// = 1_440_000_000_000_000 wei = 0.00144 ETH per fill
+// = 7_200_000_000_000_000 wei = 0.0072 ETH per fill at 1 gwei
