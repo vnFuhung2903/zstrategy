@@ -1,7 +1,7 @@
 // ── Shared type aliases ───────────────────────────────────────────────────────
 
 export type Direction  = "BUY" | "SELL";
-export type OrderKind  = "ORDER_FILL" | "DCA";
+export type CircuitKind = "ORDER_FILL" | "DCA";
 
 // ── ExecuteRequest ────────────────────────────────────────────────────────────
 //
@@ -11,7 +11,7 @@ export type OrderKind  = "ORDER_FILL" | "DCA";
 
 export interface ExecuteRequest {
   commitmentHash: string;
-  kind:           OrderKind;
+  kind:           CircuitKind;
   tokenIn:        string;
   tokenOut:       string;
   size:           bigint;

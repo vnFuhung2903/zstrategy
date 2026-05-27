@@ -7,7 +7,7 @@ import { publicKeyset } from "../threshold/keys";
 import { reconstructUserSecret } from "../threshold/reconstruct";
 import { fetchPairPrice } from "../chain/oracle";
 import { submitExecution } from "../execution/submitter";
-import { OrderKind, Direction } from "../types";
+import { CircuitKind, Direction } from "../types";
 import {
   registry as metricsRegistry,
   executionsTotal,
@@ -273,12 +273,12 @@ app.post("/api/execute", requireSecret, async (req: Request, res: Response) => {
   res.status(202).json({ status: "executing", commitmentHash });
 
   // ── Fire-and-forget execution ─────────────────────────────────────────────
-  const orderKind: OrderKind = kind === "DCA" ? "DCA" : "ORDER_FILL";
+  const circuitKind: CircuitKind = kind === "DCA" ? "DCA" : "ORDER_FILL";
   const dir: Direction = direction === 1 ? "SELL" : "BUY";
 
   submitExecution({
     commitmentHash,
-    kind:       orderKind,
+    kind:       circuitKind,
     tokenIn:    ethers.getAddress(tokenIn),
     tokenOut:   ethers.getAddress(tokenOut),
     size:       BigInt(size),
