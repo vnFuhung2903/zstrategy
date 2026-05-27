@@ -8,6 +8,7 @@ import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
 import { Lock, Info, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useFreeBalance, formatUnits as fmtUnits } from "@/hooks/useVault";
@@ -522,19 +523,16 @@ export default function StrategyPage() {
                     </span>
                   </span>
                 </div>
-                <div className="relative">
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={amount}
-                    onChange={e => setAmount(e.target.value)}
-                    className="w-full bg-surface-container-lowest text-on-surface text-xl font-display font-semibold px-3 py-2.5 rounded-sm border-b border-outline-variant/30 outline-none focus:border-primary-container transition-all pr-14"
-                  />
-                  <button onClick={setMax} className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-primary-container font-medium hover:text-primary-fixed">
-                    MAX
-                  </button>
-                </div>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={amount}
+                  onChange={e => setAmount(e.target.value)}
+                  className="text-xl font-display font-semibold"
+                  actionLabel="MAX"
+                  actionDisabled={tokenInBalance === undefined || tokenInBalance === 0n}
+                  onAction={setMax}
+                />
               </div>
 
               {/* Target price — LIMIT only. MARKET fills at the live oracle price. */}
@@ -547,9 +545,8 @@ export default function StrategyPage() {
                   </div>
                   <div className="relative">
                     <input
-                      type="number"
-                      min="0"
-                      step="any"
+                      type="text"
+                      inputMode="decimal"
                       value={targetPrice}
                       onChange={e => setTargetPrice(e.target.value)}
                       className="w-full bg-surface-container-lowest text-on-surface text-xl font-display font-semibold px-3 py-2.5 rounded-sm border-b border-outline-variant/30 outline-none focus:border-secondary transition-all pr-14 font-tabular"

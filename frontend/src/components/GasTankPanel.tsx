@@ -64,6 +64,14 @@ export function GasTankPanel() {
       ? Number(gasBalance / PER_EXECUTION_ETH_ESTIMATE)
       : 0;
 
+  const maxAmount = mode === "deposit" ? walletEth?.value : gasBalance;
+
+  function setMaxAmount() {
+    if (maxAmount !== undefined) {
+      setAmount(formatEther(maxAmount));
+    }
+  }
+
   function handleAction() {
     if (!amount || parseFloat(amount) <= 0) return;
     if (mode === "deposit") depositGas(amount);
@@ -135,13 +143,15 @@ export function GasTankPanel() {
         {/* Amount input */}
         <Input
           label={`Amount (ETH)`}
-          type="number"
-          min="0"
-          step="any"
+          type="text"
+          inputMode="decimal"
           value={amount}
           onChange={e => setAmount(e.target.value)}
           placeholder="0.00"
           suffix="ETH"
+          actionLabel="MAX"
+          actionDisabled={maxAmount === undefined || maxAmount === 0n}
+          onAction={setMaxAmount}
         />
 
         {/* CTA */}

@@ -7,6 +7,7 @@ import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
 import { TokenPairSelect } from "@/components/ui/TokenPairSelect";
 import { Lock, Info, Loader2, AlertCircle, Repeat2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -57,7 +58,7 @@ export default function DcaPage() {
   const [pair,        setPair]        = useState<TradingPair>(DEFAULT_PAIR);
   const [side,        setSide]        = useState<Side>("BUY");
   const [sizeInput,   setSizeInput]   = useState("");
-  const [roundCount,  setRoundCount]  = useState(5);
+  const [roundCountInput, setRoundCountInput] = useState("2");
   const [intervalKey, setIntervalKey] = useState<keyof typeof INTERVALS>("24H");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [pendingPost, setPendingPost] = useState<PostDcaGroupBody | null>(null);
@@ -87,7 +88,11 @@ export default function DcaPage() {
   // until the user has at least that much prepaid. Treat the pre-query
   // "undefined" state as a shortfall so the button is disabled until the
   // balance read resolves (otherwise a fast clicker could submit early).
-  const gasNeeded   = PER_EXECUTION_ETH_ESTIMATE * BigInt(roundCount);
+  const parsedRoundCount = Number.parseInt(roundCountInput, 10);
+  const roundCount = Number.isInteger(parsedRoundCount) ? parsedRoundCount : 0;
+  const roundCountValid = roundCount >= 2 && roundCount <= 10;
+
+  const gasNeeded   = PER_EXECUTION_ETH_ESTIMATE * BigInt(roundCountValid ? roundCount : 0);
   const gasShortfall =
     gasBalance === undefined || gasBalance < gasNeeded;
 
@@ -105,12 +110,12 @@ export default function DcaPage() {
   }, []);
 
   const schedule = useMemo(
-    () => now === null ? [] : buildSchedule(roundCount, interval, now),
-    [roundCount, interval, now],
+    () => now === null || !roundCountValid ? [] : buildSchedule(roundCount, interval, now),
+    [roundCount, roundCountValid, interval, now],
   );
 
   async function handleSubmit() {
-    if (!isConnected || !address || sizeBig === BigInt(0)) return;
+    if (!isConnected || !address || sizeBig === BigInt(0) || !roundCountValid) return;
     setSubmitError(null);
 
     try {
@@ -216,6 +221,12 @@ export default function DcaPage() {
   const fmt = (ts: number) =>
     new Date(ts * 1000).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
+  function setMaxSpend() {
+    if (tokenInBalance !== undefined) {
+      setSizeInput(fmtUnits(tokenInBalance, tokenIn.decimals));
+    }
+  }
+
   return (
     <>
       <Topbar title="DCA Pulse" />
@@ -269,20 +280,28 @@ export default function DcaPage() {
                     </span>
                   </span>
                 </div>
-                <input
-                  type="number" min="0" step="any" value={sizeInput}
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={sizeInput}
                   onChange={e => setSizeInput(e.target.value)}
-                  className="w-full bg-surface-container-lowest text-on-surface text-xl font-display font-semibold px-3 py-2.5 rounded-sm border-b border-outline-variant/30 outline-none focus:border-primary-container transition-all"
+                  className="text-xl font-display font-semibold"
+                  actionLabel="MAX"
+                  actionDisabled={tokenInBalance === undefined || tokenInBalance === 0n}
+                  onAction={setMaxSpend}
                 />
               </div>
 
               {/* Rounds */}
               <div>
                 <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Number of Rounds (max 10)</p>
-                <input
-                  type="number" min="2" max="10" value={roundCount}
-                  onChange={e => setRoundCount(Math.min(10, Math.max(2, parseInt(e.target.value) || 2)))}
-                  className="w-full bg-surface-container-lowest text-on-surface text-xl font-display font-semibold px-3 py-2.5 rounded-sm border-b border-outline-variant/30 outline-none focus:border-primary-container transition-all"
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={roundCountInput}
+                  onChange={e => setRoundCountInput(e.target.value)}
+                  className="text-xl font-display font-semibold"
+                  error={!roundCountValid ? "Round count must be between 2 and 10." : undefined}
                 />
               </div>
 
@@ -366,7 +385,7 @@ export default function DcaPage() {
                   variant="sovereign"
                   size="md"
                   className="w-full sm:w-auto"
-                  disabled={!isConnected || busy || sizeBig === BigInt(0) || gasShortfall}
+                  disabled={!isConnected || busy || sizeBig === BigInt(0) || !roundCountValid || gasShortfall}
                   onClick={handleSubmit}
                 >
                   {busy

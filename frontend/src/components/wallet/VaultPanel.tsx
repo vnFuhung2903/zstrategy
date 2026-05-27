@@ -65,6 +65,14 @@ export function VaultPanel() {
     return parseFloat(formatUnits(raw, token.decimals)).toLocaleString("en-US", { maximumFractionDigits: 6 });
   }
 
+  const maxAmount = mode === "deposit" ? walletBalance : vaultBalance;
+
+  function setMaxAmount() {
+    if (maxAmount !== undefined) {
+      setAmount(formatUnits(maxAmount, token.decimals));
+    }
+  }
+
   function handleAction() {
     if (!amount || parseFloat(amount) <= 0) return;
     if (mode === "deposit") {
@@ -146,13 +154,15 @@ export function VaultPanel() {
         {/* Amount input */}
         <Input
           label={`Amount (${token.label})`}
-          type="number"
-          min="0"
-          step="any"
+          type="text"
+          inputMode="decimal"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           placeholder="0.00"
           suffix={token.label}
+          actionLabel="MAX"
+          actionDisabled={maxAmount === undefined || maxAmount === 0n}
+          onAction={setMaxAmount}
         />
 
         {/* CTA */}
