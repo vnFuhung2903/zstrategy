@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useWriteContract, useWaitForTransactionReceipt, useReadContract, useChainId } from "wagmi";
 import { ADDRESSES, COMMITMENT_REGISTRY_ABI } from "@/lib/contracts";
 import { arbitrumSepolia } from "wagmi/chains";
@@ -22,11 +23,23 @@ export function useRegistryPaused() {
   });
 }
 
+interface RegisterCommitmentOptions {
+  successToastEnabled?: boolean;
+}
+
 export function useRegisterCommitment() {
   const registry = useRegistryAddress();
+  const [successToastEnabled, setSuccessToastEnabled] = useState(true);
   const { writeContract, data: hash, isPending, error } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
-  useTxToast({ hash, isConfirming, isSuccess, error: error as Error | null, label: "Register commitment" });
+  useTxToast({
+    hash,
+    isConfirming,
+    isSuccess,
+    error: error as Error | null,
+    label: "Register commitment",
+    successToastEnabled,
+  });
 
   const register = (
     commitmentHash: `0x${string}`,
@@ -36,7 +49,9 @@ export function useRegisterCommitment() {
     minOut: bigint,
     expiry: number,
     kind: number = 0,
-  ) =>
+    options: RegisterCommitmentOptions = {},
+  ) => {
+    setSuccessToastEnabled(options.successToastEnabled ?? true);
     writeContract({
       address: registry,
       abi: COMMITMENT_REGISTRY_ABI,
@@ -44,55 +59,9 @@ export function useRegisterCommitment() {
       args: [commitmentHash, tokenIn, tokenOut, size, minOut, BigInt(expiry), kind],
       ...FEE_OVERRIDES,
     });
+  };
 
   return { register, hash, isPending, isConfirming, isSuccess, error };
-}
-
-export function useCancelCommitment() {
-  const registry = useRegistryAddress();
-  const { writeContract, data: hash, isPending, error } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
-  useTxToast({ hash, isConfirming, isSuccess, error: error as Error | null, label: "Cancel commitment" });
-
-  const cancel = (commitmentHash: `0x${string}`, nullifier: `0x${string}`) =>
-    writeContract({
-      address: registry,
-      abi: COMMITMENT_REGISTRY_ABI,
-      functionName: "cancelCommitment",
-      args: [commitmentHash, nullifier],
-      ...FEE_OVERRIDES,
-    });
-
-  return { cancel, hash, isPending, isConfirming, isSuccess, error };
-}
-
-/**
- * Self-execute fallback. Used when the keeper network is unreachable or the
- * user wants to take direct action. The contract reads Chainlink at fill time
- * and uses that value as a public input, so the proof must be generated
- * against the same live value — see `MyStrategies.tsx` for the read+prove
- * sequence and `lib/orderFillProof.ts` for the bb.js (UltraHonk) integration.
- */
-export function useExecuteCommitment() {
-  const registry = useRegistryAddress();
-  const { writeContract, data: hash, isPending, error } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
-  useTxToast({ hash, isConfirming, isSuccess, error: error as Error | null, label: "Self-execute commitment" });
-
-  const execute = (
-    commitmentHash: `0x${string}`,
-    nullifier: `0x${string}`,
-    proof: `0x${string}`,
-  ) =>
-    writeContract({
-      address: registry,
-      abi: COMMITMENT_REGISTRY_ABI,
-      functionName: "executeCommitment",
-      args: [commitmentHash, nullifier, proof],
-      ...FEE_OVERRIDES,
-    });
-
-  return { execute, hash, isPending, isConfirming, isSuccess, error };
 }
 
 export function useRegisterCommitmentBatch() {
@@ -119,15 +88,4 @@ export function useRegisterCommitmentBatch() {
     });
 
   return { registerBatch, hash, isPending, isConfirming, isSuccess, error };
-}
-
-export function useGetCommitment(commitmentHash: `0x${string}` | undefined) {
-  const registry = useRegistryAddress();
-  return useReadContract({
-    address: registry,
-    abi: COMMITMENT_REGISTRY_ABI,
-    functionName: "getCommitment",
-    args: commitmentHash ? [commitmentHash] : undefined,
-    query: { enabled: !!commitmentHash },
-  });
 }

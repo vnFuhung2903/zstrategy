@@ -51,55 +51,6 @@ export const COMMITMENT_REGISTRY_ABI = [
   },
   {
     type: "function",
-    name: "cancelCommitment",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "commitmentHash", type: "bytes32" },
-      { name: "nullifier",      type: "bytes32" },
-    ],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "executeCommitment",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "commitmentHash", type: "bytes32" },
-      { name: "nullifier",      type: "bytes32" },
-      { name: "proof",          type: "bytes"   },
-    ],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "getCommitment",
-    stateMutability: "view",
-    inputs: [{ name: "commitmentHash", type: "bytes32" }],
-    outputs: [
-      {
-        type: "tuple",
-        components: [
-          { name: "owner",   type: "address" },
-          { name: "tokenIn", type: "address" },
-          { name: "tokenOut",type: "address" },
-          { name: "size",    type: "uint256" },
-          { name: "minOut",  type: "uint256" },
-          { name: "expiry",  type: "uint64"  },
-          { name: "status",  type: "uint8"   },
-          { name: "kind",    type: "uint8"   },
-        ],
-      },
-    ],
-  },
-  {
-    type: "function",
-    name: "getCommitmentStatus",
-    stateMutability: "view",
-    inputs: [{ name: "commitmentHash", type: "bytes32" }],
-    outputs: [{ name: "", type: "uint8" }],
-  },
-  {
-    type: "function",
     name: "paused",
     stateMutability: "view",
     inputs: [],
