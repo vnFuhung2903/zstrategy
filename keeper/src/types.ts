@@ -23,6 +23,7 @@ export interface ExecuteRequest {
   nullifier:      string;   // "0x..." bytes32
   scheduledLo?:   number;   // DCA only
   scheduledHi?:   number;   // DCA only
+  executionTimestamp?: number; // DCA only; timestamp independently re-verified before reconstruction
   userSecret:     string;   // reconstructed by /api/execute handler before calling submitter
 }
 
@@ -32,5 +33,4 @@ export interface KeeperState {
   startedAt:     number;
   executedCount: number;
   failedCount:   number;
-  blockNumber:   number;
 }

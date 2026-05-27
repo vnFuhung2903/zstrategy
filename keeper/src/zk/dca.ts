@@ -1,12 +1,10 @@
 /**
  * UltraHonk proof generation for the DCA circuit.
  *
- * The DCA circuit uses `block_timestamp` as its fill-time public input instead
- * of an oracle price. The keeper generates the proof with the current wall-clock
- * timestamp and submits immediately. If the tx lands in a block whose
- * `block.timestamp` differs by more than a few seconds, the verifier will reject
- * and the keeper retries next tick. DCA execution windows are hours wide, so
- * the drift is inconsequential.
+ * The DCA circuit uses `execution_timestamp` as its fill-time public input
+ * instead of an oracle price. The keeper proves against its current wall-clock
+ * timestamp and passes that same value to the registry, which accepts it only
+ * if the tx lands shortly afterward.
  *
  * Witness inputs use the snake_case names from `circuits/dca/src/main.nr`.
  */
@@ -44,7 +42,7 @@ export interface DcaWitness {
   userSecret:     `0x${string}`; // bytes32
   // Public inputs — must match what CommitmentRegistry passes to the verifier
   commitmentHash: `0x${string}`;
-  blockTimestamp: number;        // u64 — use Math.floor(Date.now()/1000) at submit time
+  executionTimestamp: number;    // u64 — current Unix seconds at proof generation
   nullifier:      `0x${string}`;
   tokenIn:        `0x${string}`;
   tokenOut:       `0x${string}`;
@@ -67,7 +65,7 @@ export async function generateDcaProof(
     user_secret:  inputs.userSecret,
     // public
     commitment_hash: inputs.commitmentHash,
-    block_timestamp: inputs.blockTimestamp.toString(),
+    execution_timestamp: inputs.executionTimestamp.toString(),
     nullifier:       inputs.nullifier,
     token_in:        inputs.tokenIn,
     token_out:       inputs.tokenOut,
