@@ -5,7 +5,7 @@ import { useAccount, useChains, useSwitchChain, useWalletClient } from "wagmi";
 import { Button } from "@/components/ui/Button";
 import { ConnectModal } from "@/components/wallet/ConnectModal";
 import { truncateAddress } from "@/lib/utils";
-import { Wallet, ChevronDown, Check, Plus, X } from "lucide-react";
+import { Wallet, ChevronDown, Check, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface TopbarProps {
@@ -131,9 +131,15 @@ function NetworkDropdown({ onClose }: { onClose: () => void }) {
 
 export function Topbar({ title }: TopbarProps) {
   const { address, isConnected, chain } = useAccount();
+  const [mounted,      setMounted]      = useState(false);
   const [connectOpen,  setConnectOpen]  = useState(false);
   const [networkOpen,  setNetworkOpen]  = useState(false);
   const networkRef = useRef<HTMLDivElement>(null);
+  const showConnectedWallet = mounted && isConnected;
+
+  useEffect(() => {
+    queueMicrotask(() => setMounted(true));
+  }, []);
 
   // Close network dropdown on outside click.
   useEffect(() => {
@@ -155,7 +161,7 @@ export function Topbar({ title }: TopbarProps) {
         </h1>
 
         <div className="flex items-center gap-2">
-          {isConnected ? (
+          {showConnectedWallet ? (
             <>
               {/* Network selector */}
               <div className="relative" ref={networkRef}>
