@@ -4,9 +4,9 @@
 //   1. The commitment_hash binds to the on-chain registration fields
 //      (token_in, token_out, size, min_out, expiry) AND the private
 //      schedule params (scheduled_lo, scheduled_hi, nonce, user_secret).
-//   2. The time fill condition is satisfied: the current block timestamp
-//      falls within the private execution window [scheduled_lo, scheduled_hi].
-//   3. The commitment has not expired: block_timestamp < expiry.
+//   2. The time fill condition is satisfied: the keeper-proven execution
+//      timestamp falls within the private execution window [scheduled_lo, scheduled_hi].
+//   3. The commitment has not expired: execution_timestamp < expiry.
 //   4. The nullifier is correctly derived from (user_secret, nonce).
 //
 // Preimage layout (192 bytes, packed big-endian):
@@ -119,16 +119,16 @@ fn main(
     nonce:        Field,
     user_secret:  Field,
     // Public inputs:
-    // [0] commitment_hash, [1] block_timestamp, [2] nullifier,
+    // [0] commitment_hash, [1] execution_timestamp, [2] nullifier,
     // [3] token_in, [4] token_out, [5] size, [6] min_out, [7] expiry.
-    commitment_hash: pub Field,
-    block_timestamp: pub u64,
-    nullifier:       pub Field,
-    token_in:        pub Field,
-    token_out:       pub Field,
-    size:            pub Field,
-    min_out:         pub Field,
-    expiry:          pub u64,
+    commitment_hash:     pub Field,
+    execution_timestamp: pub u64,
+    nullifier:           pub Field,
+    token_in:            pub Field,
+    token_out:           pub Field,
+    size:                pub Field,
+    min_out:             pub Field,
+    expiry:              pub u64,
 ) {
     assert_address_field(token_in);
     assert_address_field(token_out);
@@ -141,12 +141,14 @@ fn main(
     );
     assert(computed_commitment == commitment_hash, "commitment mismatch");
 
-    // 2. Time fill condition: block_timestamp falls within the private window
-    assert(block_timestamp >= scheduled_lo, "too early: before scheduled window");
-    assert(block_timestamp <= scheduled_hi, "too late: after scheduled window");
+    // 2. Time fill condition: execution_timestamp falls within the private window.
+    // The registry separately checks this timestamp is recent relative to the
+    // mined block timestamp, so the proof does not need to predict block time exactly.
+    assert(execution_timestamp >= scheduled_lo, "too early: before scheduled window");
+    assert(execution_timestamp <= scheduled_hi, "too late: after scheduled window");
 
     // 3. Not expired
-    assert(block_timestamp < expiry, "commitment expired");
+    assert(execution_timestamp < expiry, "commitment expired");
 
     // 4. Nullifier derivation
     let computed_nullifier = compute_nullifier(user_secret, nonce);
@@ -308,7 +310,7 @@ fn test_fill_after_expiry_fails() {
     );
     let null = compute_nullifier(user_secret, nonce);
 
-    // block_timestamp is within the window but past expiry
+    // execution_timestamp is within the window but past expiry
     main(
         scheduled_lo, scheduled_hi, nonce, user_secret,
         commitment, scheduled_lo, null,
