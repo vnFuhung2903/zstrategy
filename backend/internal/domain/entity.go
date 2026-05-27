@@ -11,19 +11,19 @@ const (
 )
 
 type PendingStrategy struct {
-	ID             uint           `gorm:"primaryKey;autoIncrement"`
-	CommitmentHash string         `gorm:"uniqueIndex;size:66;not null"`
-	ChainID        int64          `gorm:"not null"`
-	Kind           CommitmentKind `gorm:"size:20;not null;default:'ORDER_FILL'"`
-	TokenIn        string         `gorm:"size:42;not null"`
-	TokenOut       string         `gorm:"size:42;not null"`
-	Size           string         `gorm:"not null"`
-	MinOut         string         `gorm:"not null"`
-	Expiry         int64          `gorm:"not null"`
-	LimitPrice     string         `gorm:"not null;default:'0'"`
-	Direction      int            `gorm:"not null;default:0"`
-	Nonce          string         `gorm:"size:66;not null"`
-	Nullifier      string         `gorm:"size:66;not null"`
+	ID             uint         `gorm:"primaryKey;autoIncrement"`
+	CommitmentHash string       `gorm:"uniqueIndex;size:66;not null"`
+	ChainID        int64        `gorm:"not null"`
+	Kind           StrategyKind `gorm:"size:20;not null;default:'LIMIT'"`
+	TokenIn        string       `gorm:"size:42;not null"`
+	TokenOut       string       `gorm:"size:42;not null"`
+	Size           string       `gorm:"not null"`
+	MinOut         string       `gorm:"not null"`
+	Expiry         int64        `gorm:"not null"`
+	LimitPrice     string       `gorm:"not null;default:'0'"`
+	Direction      int          `gorm:"not null;default:0"`
+	Nonce          string       `gorm:"size:66;not null"`
+	Nullifier      string       `gorm:"size:66;not null"`
 	ScheduledLo    *int64
 	ScheduledHi    *int64
 	Status         StrategyStatus `gorm:"size:20;not null;default:'PENDING'"`
@@ -32,7 +32,7 @@ type PendingStrategy struct {
 }
 
 type ExecutionStatus string
-type CommitmentKind string
+type StrategyKind string
 
 const (
 	StatusRegistered ExecutionStatus = "registered"
@@ -42,15 +42,12 @@ const (
 )
 
 const (
-	KindOrderFill CommitmentKind = "ORDER_FILL"
-	KindDCA       CommitmentKind = "DCA"
-	// KindMarket is a backend-only orchestration flag: on-chain the commitment
-	// is still kind=0 (ORDER_FILL) with a sentinel price that trivially fills.
-	// The monitor goroutine fires the keeper trigger immediately rather than
-	// polling Chainlink. Stored in pending_strategies for dashboard visibility;
-	// translated to ORDER_FILL on the wire when forwarded to the keeper.
-	KindMarket CommitmentKind = "MARKET"
+	KindLimit  StrategyKind = "LIMIT"
+	KindDCA    StrategyKind = "DCA"
+	KindMarket StrategyKind = "MARKET"
 )
+
+const OnChainKindOrderFill = "ORDER_FILL"
 
 // ExecutionRecord is an anonymized on-chain event record.
 // No strategy parameters (price, size, direction) are ever stored.
@@ -59,7 +56,7 @@ type ExecutionRecord struct {
 	CommitmentHash string          `gorm:"uniqueIndex;size:66;not null"                              json:"commitment_hash"`
 	ChainID        int64           `gorm:"not null;index"                                            json:"chain_id"`
 	Status         ExecutionStatus `gorm:"size:20;not null;index"                                    json:"status"`
-	Kind           CommitmentKind  `gorm:"size:20;not null;default:'ORDER_FILL';index"               json:"kind"`
+	Kind           StrategyKind    `gorm:"size:20;not null;default:'LIMIT';index"                    json:"kind"`
 	TxHash         string          `gorm:"size:66"                                                   json:"tx_hash"`
 	BlockNumber    uint64          `                                                                 json:"block_number"`
 	GasUsed        uint64          `                                                                 json:"gas_used"`
@@ -90,7 +87,7 @@ type Statistics struct {
 type ExecutionFilters struct {
 	Query  string
 	Status ExecutionStatus
-	Kind   CommitmentKind
+	Kind   StrategyKind
 }
 
 type KeeperHealth struct {

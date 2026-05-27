@@ -74,8 +74,7 @@ func (h *Handler) ListExecutions(c *gin.Context) {
 		status == domain.StatusExecuted || status == domain.StatusCancelled || status == domain.StatusExpired {
 		filters.Status = status
 	}
-	if kind := domain.CommitmentKind(c.DefaultQuery("kind", "")); kind == domain.KindOrderFill ||
-		kind == domain.KindDCA || kind == domain.KindMarket {
+	if kind := parseStrategyKind(c.DefaultQuery("kind", "")); kind != "" {
 		filters.Kind = kind
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -203,9 +202,9 @@ func (h *Handler) registerStrategy(c *gin.Context, waitForExecution bool) {
 		return
 	}
 
-	kind := domain.CommitmentKind(body.Kind)
-	if kind != domain.KindDCA && kind != domain.KindMarket {
-		kind = domain.KindOrderFill
+	kind := parseStrategyKind(body.Kind)
+	if kind == "" {
+		kind = domain.KindLimit
 	}
 	if waitForExecution && kind != domain.KindMarket {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "execute-sync is only supported for MARKET strategies"})
@@ -252,7 +251,7 @@ func (h *Handler) registerStrategy(c *gin.Context, waitForExecution bool) {
 		return
 	}
 	if kind == domain.KindMarket && h.indexer != nil {
-		if err := h.indexer.UpdateExecutionKind(c.Request.Context(), body.CommitmentHash, domain.KindMarket); err != nil {
+		if err := h.indexer.UpdateExecutionStrategyKind(c.Request.Context(), body.CommitmentHash, domain.KindMarket); err != nil {
 			log.Printf("[Handler] update execution kind for MARKET %s: %v", body.CommitmentHash, err)
 		}
 	}
@@ -296,6 +295,17 @@ func (h *Handler) registerStrategy(c *gin.Context, waitForExecution bool) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"status": "accepted", "commitmentHash": body.CommitmentHash})
+}
+
+func parseStrategyKind(raw string) domain.StrategyKind {
+	switch domain.StrategyKind(raw) {
+	case domain.KindLimit, domain.KindMarket, domain.KindDCA:
+		return domain.StrategyKind(raw)
+	}
+	if raw == domain.OnChainKindOrderFill {
+		return domain.KindLimit
+	}
+	return ""
 }
 
 // registerDcaGroupBody is the JSON body for POST /api/v1/dca-strategies.

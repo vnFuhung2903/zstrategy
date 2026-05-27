@@ -72,18 +72,15 @@ func (s *IndexerService) HandleRegistered(ctx context.Context, commitmentHash, k
 	if exists {
 		return nil
 	}
-	k := domain.CommitmentKind(kind)
+	k := onChainKindToStrategyKind(kind)
 	if s.strategyRepo != nil {
 		pending, err := s.strategyRepo.GetByHash(ctx, commitmentHash)
 		if err != nil {
 			return fmt.Errorf("lookup pending strategy kind: %w", err)
 		}
-		if pending != nil && pending.Kind == domain.KindMarket {
-			k = domain.KindMarket
+		if pending != nil {
+			k = pending.Kind
 		}
-	}
-	if k != domain.KindDCA && k != domain.KindMarket {
-		k = domain.KindOrderFill
 	}
 	metrics.StrategiesRegistered.WithLabelValues(strconv.FormatInt(chainID, 10), string(k)).Inc()
 	return s.repo.Save(ctx, &domain.ExecutionRecord{
@@ -95,7 +92,7 @@ func (s *IndexerService) HandleRegistered(ctx context.Context, commitmentHash, k
 	})
 }
 
-func (s *IndexerService) UpdateExecutionKind(ctx context.Context, commitmentHash string, kind domain.CommitmentKind) error {
+func (s *IndexerService) UpdateExecutionStrategyKind(ctx context.Context, commitmentHash string, kind domain.StrategyKind) error {
 	if kind != domain.KindMarket {
 		return nil
 	}
@@ -200,7 +197,7 @@ func (s *IndexerService) HandleExecuted(ctx context.Context, commitmentHash, txH
 			CommitmentHash: commitmentHash,
 			ChainID:        chainID,
 			Status:         domain.StatusExecuted,
-			Kind:           domain.CommitmentKind(kind),
+			Kind:           domain.StrategyKind(kind),
 			TxHash:         txHash,
 			BlockNumber:    blockNumber,
 			GasUsed:        gasUsed,
@@ -239,9 +236,9 @@ func (s *IndexerService) HandleExpired(ctx context.Context, commitmentHash strin
 	return s.repo.UpdateStatus(ctx, commitmentHash, domain.StatusExpired, "", blockNumber, 0, nil)
 }
 
-// lookupKindLabel returns "ORDER_FILL" or "DCA" for an existing record so the
+// lookupKindLabel returns the user-facing strategy kind for an existing record so the
 // terminal-event metric carries the same kind label as the register event.
-// On miss (no row yet) we fall back to "ORDER_FILL" — the metric is best-effort,
+// On miss (no row yet) we fall back to "LIMIT"; the metric is best-effort,
 // not authoritative.
 func (s *IndexerService) lookupKindLabel(ctx context.Context, commitmentHash string) string {
 	rec, err := s.repo.FindByHash(ctx, commitmentHash)
@@ -252,7 +249,14 @@ func (s *IndexerService) lookupKindLabel(ctx context.Context, commitmentHash str
 				return string(pending.Kind)
 			}
 		}
-		return string(domain.KindOrderFill)
+		return string(domain.KindLimit)
 	}
 	return string(rec.Kind)
+}
+
+func onChainKindToStrategyKind(kind string) domain.StrategyKind {
+	if kind == string(domain.KindDCA) {
+		return domain.KindDCA
+	}
+	return domain.KindLimit
 }

@@ -39,7 +39,7 @@ func (r *fakeExecutionRepo) UpdateStatus(_ context.Context, commitmentHash strin
 	return nil
 }
 
-func (r *fakeExecutionRepo) UpdateKind(_ context.Context, commitmentHash string, kind domain.CommitmentKind) error {
+func (r *fakeExecutionRepo) UpdateKind(_ context.Context, commitmentHash string, kind domain.StrategyKind) error {
 	rec := r.records[commitmentHash]
 	if rec == nil {
 		rec = &domain.ExecutionRecord{CommitmentHash: commitmentHash}
@@ -99,7 +99,7 @@ func TestHandleRegisteredPreservesMarketKindFromPendingStrategy(t *testing.T) {
 	}}
 	svc := NewIndexerService(execRepo, strategyRepo, "", "")
 
-	if err := svc.HandleRegistered(ctx, hash, string(domain.KindOrderFill), 421614, time.Now()); err != nil {
+	if err := svc.HandleRegistered(ctx, hash, domain.OnChainKindOrderFill, 421614, time.Now()); err != nil {
 		t.Fatalf("HandleRegistered: %v", err)
 	}
 
@@ -108,15 +108,15 @@ func TestHandleRegisteredPreservesMarketKindFromPendingStrategy(t *testing.T) {
 	}
 }
 
-func TestUpdateExecutionKindUpgradesExistingMarketRecord(t *testing.T) {
+func TestUpdateExecutionStrategyKindUpgradesExistingMarketRecord(t *testing.T) {
 	ctx := context.Background()
 	hash := "0xrace"
 	execRepo := newFakeExecutionRepo()
-	execRepo.records[hash] = &domain.ExecutionRecord{CommitmentHash: hash, Kind: domain.KindOrderFill}
+	execRepo.records[hash] = &domain.ExecutionRecord{CommitmentHash: hash, Kind: domain.KindLimit}
 	svc := NewIndexerService(execRepo, nil, "", "")
 
-	if err := svc.UpdateExecutionKind(ctx, hash, domain.KindMarket); err != nil {
-		t.Fatalf("UpdateExecutionKind: %v", err)
+	if err := svc.UpdateExecutionStrategyKind(ctx, hash, domain.KindMarket); err != nil {
+		t.Fatalf("UpdateExecutionStrategyKind: %v", err)
 	}
 
 	if got := execRepo.records[hash].Kind; got != domain.KindMarket {

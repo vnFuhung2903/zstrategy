@@ -14,7 +14,7 @@ import (
 )
 
 // StrategiesRegistered counts CommitmentRegistered events the chain indexer
-// has processed. Labels: chain_id, kind (ORDER_FILL|DCA).
+// has processed. Labels: chain_id, kind (LIMIT|MARKET|DCA).
 var StrategiesRegistered = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "zstrategy_strategies_registered_total",
 	Help: "Total commitments registered, by chain and kind.",
@@ -35,7 +35,7 @@ var PendingStrategies = promauto.NewGaugeVec(prometheus.GaugeOpts{
 }, []string{"kind"})
 
 // MonitorEvalDuration tracks how long a single monitor-tick evaluation takes
-// (oracle reads dominate for ORDER_FILL; near-zero for DCA/MARKET). Labels: kind.
+// (oracle reads dominate for LIMIT; near-zero for DCA/MARKET). Labels: kind.
 var MonitorEvalDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Name:    "zstrategy_monitor_eval_duration_seconds",
 	Help:    "Duration of a single monitor tick evaluation, by kind.",

@@ -22,7 +22,7 @@ type StrategyRepository interface {
 type ExecutionRepository interface {
 	Save(ctx context.Context, r *ExecutionRecord) error
 	UpdateStatus(ctx context.Context, commitmentHash string, status ExecutionStatus, txHash string, blockNumber, gasUsed uint64, executedAt *time.Time) error
-	UpdateKind(ctx context.Context, commitmentHash string, kind CommitmentKind) error
+	UpdateKind(ctx context.Context, commitmentHash string, kind StrategyKind) error
 	ExistsByHash(ctx context.Context, commitmentHash string) (bool, error)
 	// FindByHash returns nil if no row matches. Used by the metrics path to
 	// attach the original `kind` label to terminal-state counters.

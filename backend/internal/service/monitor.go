@@ -42,26 +42,26 @@ const (
 
 // executeRequest mirrors the JSON body sent to keeper POST /api/execute.
 type executeRequest struct {
-	CommitmentHash string  `json:"commitmentHash"`
-	Kind           string  `json:"kind"`
-	TokenIn        string  `json:"tokenIn"`
-	TokenOut       string  `json:"tokenOut"`
-	Size           string  `json:"size"`
-	MinOut         string  `json:"minOut"`
-	Expiry         int64   `json:"expiry"`
-	LimitPrice     string  `json:"limitPrice"`
-	Direction      int     `json:"direction"`
-	Nonce          string  `json:"nonce"`
-	Nullifier      string  `json:"nullifier"`
-	ScheduledLo    *int64  `json:"scheduledLo"`
-	ScheduledHi    *int64  `json:"scheduledHi"`
+	CommitmentHash string `json:"commitmentHash"`
+	Kind           string `json:"kind"`
+	TokenIn        string `json:"tokenIn"`
+	TokenOut       string `json:"tokenOut"`
+	Size           string `json:"size"`
+	MinOut         string `json:"minOut"`
+	Expiry         int64  `json:"expiry"`
+	LimitPrice     string `json:"limitPrice"`
+	Direction      int    `json:"direction"`
+	Nonce          string `json:"nonce"`
+	Nullifier      string `json:"nullifier"`
+	ScheduledLo    *int64 `json:"scheduledLo"`
+	ScheduledHi    *int64 `json:"scheduledHi"`
 }
 
 // trackedMonitor pairs a goroutine's cancel func with the strategy kind so we
 // can decrement the right Prometheus gauge label when monitoring stops.
 type trackedMonitor struct {
 	cancel context.CancelFunc
-	kind   domain.CommitmentKind
+	kind   domain.StrategyKind
 }
 
 type MonitorService struct {
@@ -93,7 +93,7 @@ func NewMonitorService(
 	keeperURL string,
 	keeperAPISecret string,
 ) *MonitorService {
-	regABI, _  := abi.JSON(strings.NewReader(registryPriceFeedABI))
+	regABI, _ := abi.JSON(strings.NewReader(registryPriceFeedABI))
 	feedABI, _ := abi.JSON(strings.NewReader(chainlinkAggregatorABI))
 
 	hasRegistry := registryAddress != "" && ethClient != nil
@@ -102,7 +102,7 @@ func NewMonitorService(
 		addr = common.HexToAddress(registryAddress)
 	}
 	if !hasRegistry {
-		log.Println("[Monitor] COMMITMENT_REGISTRY_ADDRESS not configured — ORDER_FILL monitoring disabled")
+		log.Println("[Monitor] COMMITMENT_REGISTRY_ADDRESS not configured — LIMIT strategy monitoring disabled")
 	}
 	return &MonitorService{
 		repo:            repo,
@@ -301,7 +301,7 @@ func (m *MonitorService) isFillConditionMet(ctx context.Context, s *domain.Pendi
 		return now >= *s.ScheduledLo && now <= *s.ScheduledHi, nil
 	}
 
-	// ORDER_FILL: derive pair price from two registry-registered Chainlink feeds.
+	// LIMIT: derive pair price from two registry-registered Chainlink feeds.
 	if !m.hasRegistry {
 		return false, nil
 	}
@@ -329,7 +329,7 @@ func (m *MonitorService) isFillConditionMet(ctx context.Context, s *domain.Pendi
 //	normOut = answerOut * 10^(18 - dOut)
 //	priceU  = normIn * 10^dOut / normOut   (dOut decimal places)
 func (m *MonitorService) fetchPairPrice(ctx context.Context, tokenIn, tokenOut string) (*big.Int, error) {
-	addrIn  := common.HexToAddress(tokenIn)
+	addrIn := common.HexToAddress(tokenIn)
 	addrOut := common.HexToAddress(tokenOut)
 
 	feedInAddr, err := m.callRegistryPriceFeed(ctx, addrIn)
@@ -359,9 +359,9 @@ func (m *MonitorService) fetchPairPrice(ctx context.Context, tokenIn, tokenOut s
 	}
 
 	ten := big.NewInt(10)
-	normIn  := new(big.Int).Mul(answerIn,  new(big.Int).Exp(ten, big.NewInt(int64(18-dIn)),  nil))
+	normIn := new(big.Int).Mul(answerIn, new(big.Int).Exp(ten, big.NewInt(int64(18-dIn)), nil))
 	normOut := new(big.Int).Mul(answerOut, new(big.Int).Exp(ten, big.NewInt(int64(18-dOut)), nil))
-	priceU  := new(big.Int).Div(
+	priceU := new(big.Int).Div(
 		new(big.Int).Mul(normIn, new(big.Int).Exp(ten, big.NewInt(int64(dOut)), nil)),
 		normOut,
 	)
@@ -436,16 +436,16 @@ func (m *MonitorService) callChainlinkFeed(ctx context.Context, feedAddr common.
 }
 
 func (m *MonitorService) triggerKeeper(s *domain.PendingStrategy) {
-	// On the wire, MARKET is indistinguishable from ORDER_FILL: same circuit,
+	// On the keeper wire, LIMIT and MARKET both use ORDER_FILL: same circuit,
 	// same verifier, same on-chain kind=0. The keeper's oracle re-verify
-	// trivially passes against the sentinel limit price.
-	wireKind := s.Kind
-	if wireKind == domain.KindMarket {
-		wireKind = domain.KindOrderFill
+	// trivially passes for MARKET against the sentinel limit price.
+	wireKind := domain.OnChainKindOrderFill
+	if s.Kind == domain.KindDCA {
+		wireKind = string(domain.KindDCA)
 	}
 	payload := executeRequest{
 		CommitmentHash: s.CommitmentHash,
-		Kind:           string(wireKind),
+		Kind:           wireKind,
 		TokenIn:        s.TokenIn,
 		TokenOut:       s.TokenOut,
 		Size:           s.Size,
