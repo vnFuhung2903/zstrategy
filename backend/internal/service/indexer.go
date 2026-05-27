@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zstrategy/backend/internal/domain"
@@ -20,6 +22,8 @@ type IndexerService struct {
 	keeperURL       string
 	keeperAPISecret string
 	httpClient      *http.Client
+	mu              sync.Mutex
+	executedWaiters map[string][]chan *domain.ExecutionRecord
 }
 
 func NewIndexerService(repo domain.ExecutionRepository, strategyRepo domain.StrategyRepository, keeperURL, keeperAPISecret string) *IndexerService {
@@ -29,8 +33,11 @@ func NewIndexerService(repo domain.ExecutionRepository, strategyRepo domain.Stra
 		keeperURL:       keeperURL,
 		keeperAPISecret: keeperAPISecret,
 		httpClient:      &http.Client{Timeout: 10 * time.Second},
+		executedWaiters: make(map[string][]chan *domain.ExecutionRecord),
 	}
 }
+
+var ErrExecutionWaitTimeout = errors.New("execution wait timed out")
 
 // pruneKeeperShares fires a fire-and-forget DELETE to the keeper so encrypted
 // share rows for a finalized commitment do not accumulate. The keeper's
@@ -102,6 +109,76 @@ func (s *IndexerService) UpdateExecutionKind(ctx context.Context, commitmentHash
 	return s.repo.UpdateKind(ctx, commitmentHash, kind)
 }
 
+func (s *IndexerService) WaitForExecuted(ctx context.Context, commitmentHash string, timeout time.Duration) (*domain.ExecutionRecord, error) {
+	rec, err := s.repo.FindByHash(ctx, commitmentHash)
+	if err != nil {
+		return nil, err
+	}
+	if rec != nil && rec.Status == domain.StatusExecuted {
+		return rec, nil
+	}
+
+	ch := make(chan *domain.ExecutionRecord, 1)
+	s.mu.Lock()
+	s.executedWaiters[commitmentHash] = append(s.executedWaiters[commitmentHash], ch)
+	s.mu.Unlock()
+	defer s.removeExecutedWaiter(commitmentHash, ch)
+
+	// Close the check/register race: the event may have been indexed just after
+	// the first DB read and before this waiter was attached.
+	rec, err = s.repo.FindByHash(ctx, commitmentHash)
+	if err != nil {
+		return nil, err
+	}
+	if rec != nil && rec.Status == domain.StatusExecuted {
+		return rec, nil
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case rec := <-ch:
+		return rec, nil
+	case <-timer.C:
+		return nil, ErrExecutionWaitTimeout
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *IndexerService) removeExecutedWaiter(commitmentHash string, ch chan *domain.ExecutionRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	waiters := s.executedWaiters[commitmentHash]
+	for i, waiter := range waiters {
+		if waiter == ch {
+			waiters = append(waiters[:i], waiters[i+1:]...)
+			break
+		}
+	}
+	if len(waiters) == 0 {
+		delete(s.executedWaiters, commitmentHash)
+		return
+	}
+	s.executedWaiters[commitmentHash] = waiters
+}
+
+func (s *IndexerService) notifyExecuted(rec *domain.ExecutionRecord) {
+	s.mu.Lock()
+	waiters := s.executedWaiters[rec.CommitmentHash]
+	delete(s.executedWaiters, rec.CommitmentHash)
+	s.mu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- rec:
+		default:
+		}
+	}
+}
+
 func (s *IndexerService) HandleExecuted(ctx context.Context, commitmentHash, txHash string, chainID int64, blockNumber, gasUsed uint64, blockTime time.Time) error {
 	metrics.IndexerEventsTotal.WithLabelValues("CommitmentExecuted").Inc()
 	kind := s.lookupKindLabel(ctx, commitmentHash)
@@ -111,7 +188,31 @@ func (s *IndexerService) HandleExecuted(ctx context.Context, commitmentHash, txH
 		s.Monitor.UpdateStatus(ctx, commitmentHash, domain.StrategyDone)
 	}
 	go s.pruneKeeperShares(commitmentHash)
-	return s.repo.UpdateStatus(ctx, commitmentHash, domain.StatusExecuted, txHash, blockNumber, gasUsed, &blockTime)
+	if err := s.repo.UpdateStatus(ctx, commitmentHash, domain.StatusExecuted, txHash, blockNumber, gasUsed, &blockTime); err != nil {
+		return err
+	}
+	rec, err := s.repo.FindByHash(ctx, commitmentHash)
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		rec = &domain.ExecutionRecord{
+			CommitmentHash: commitmentHash,
+			ChainID:        chainID,
+			Status:         domain.StatusExecuted,
+			Kind:           domain.CommitmentKind(kind),
+			TxHash:         txHash,
+			BlockNumber:    blockNumber,
+			GasUsed:        gasUsed,
+			RegisteredAt:   blockTime,
+			ExecutedAt:     &blockTime,
+		}
+		if err := s.repo.Save(ctx, rec); err != nil {
+			return err
+		}
+	}
+	s.notifyExecuted(rec)
+	return nil
 }
 
 func (s *IndexerService) HandleCancelled(ctx context.Context, commitmentHash, txHash string, blockNumber uint64) error {
@@ -145,6 +246,12 @@ func (s *IndexerService) HandleExpired(ctx context.Context, commitmentHash strin
 func (s *IndexerService) lookupKindLabel(ctx context.Context, commitmentHash string) string {
 	rec, err := s.repo.FindByHash(ctx, commitmentHash)
 	if err != nil || rec == nil {
+		if s.strategyRepo != nil {
+			pending, pendingErr := s.strategyRepo.GetByHash(ctx, commitmentHash)
+			if pendingErr == nil && pending != nil {
+				return string(pending.Kind)
+			}
+		}
 		return string(domain.KindOrderFill)
 	}
 	return string(rec.Kind)

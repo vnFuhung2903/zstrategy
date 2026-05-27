@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"github.com/zstrategy/backend/internal/domain"
 	"github.com/zstrategy/backend/internal/service"
 )
+
+const marketExecutionWaitTimeout = 2 * time.Minute
 
 type Handler struct {
 	stats           *service.StatsService
@@ -179,6 +182,15 @@ type sharesPayload struct {
 
 // POST /api/v1/strategies
 func (h *Handler) RegisterStrategy(c *gin.Context) {
+	h.registerStrategy(c, false)
+}
+
+// POST /api/v1/strategies/execute-sync
+func (h *Handler) RegisterStrategyAndWait(c *gin.Context) {
+	h.registerStrategy(c, true)
+}
+
+func (h *Handler) registerStrategy(c *gin.Context, waitForExecution bool) {
 	var body registerStrategyBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid body: %v", err)})
@@ -194,6 +206,14 @@ func (h *Handler) RegisterStrategy(c *gin.Context) {
 	kind := domain.CommitmentKind(body.Kind)
 	if kind != domain.KindDCA && kind != domain.KindMarket {
 		kind = domain.KindOrderFill
+	}
+	if waitForExecution && kind != domain.KindMarket {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "execute-sync is only supported for MARKET strategies"})
+		return
+	}
+	if waitForExecution && len(body.EncryptedShares) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "execute-sync requires encrypted shares"})
+		return
 	}
 	limitPrice := body.LimitPrice
 	if limitPrice == "" {
@@ -218,6 +238,15 @@ func (h *Handler) RegisterStrategy(c *gin.Context) {
 		Status:         domain.StrategyPending,
 	}
 
+	sharesForwarded := false
+	if waitForExecution {
+		if err := h.forwardSharesToKeeper([]string{body.CommitmentHash}, body.EncryptedShares); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		sharesForwarded = true
+	}
+
 	if err := h.strategyRepo.Save(c.Request.Context(), s); err != nil {
 		errResponse(c, err)
 		return
@@ -228,14 +257,42 @@ func (h *Handler) RegisterStrategy(c *gin.Context) {
 		}
 	}
 
-	// Forward encrypted shares to keeper (fire-and-forget).
-	if len(body.EncryptedShares) > 0 {
-		go h.forwardSharesToKeeper([]string{body.CommitmentHash}, body.EncryptedShares)
+	if len(body.EncryptedShares) > 0 && !sharesForwarded {
+		go func() {
+			if err := h.forwardSharesToKeeper([]string{body.CommitmentHash}, body.EncryptedShares); err != nil {
+				log.Printf("[Handler] forward shares to keeper: %v", err)
+			}
+		}()
 	}
 
 	// Start monitoring goroutine.
 	if h.monitor != nil {
 		h.monitor.StartMonitoring(c.Request.Context(), s)
+	}
+
+	if waitForExecution {
+		if h.indexer == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "chain indexer unavailable"})
+			return
+		}
+		rec, err := h.indexer.WaitForExecuted(c.Request.Context(), body.CommitmentHash, marketExecutionWaitTimeout)
+		if err != nil {
+			if errors.Is(err, service.ErrExecutionWaitTimeout) {
+				c.JSON(http.StatusGatewayTimeout, gin.H{"error": err.Error()})
+				return
+			}
+			errResponse(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":         "executed",
+			"commitmentHash": body.CommitmentHash,
+			"txHash":         rec.TxHash,
+			"blockNumber":    rec.BlockNumber,
+			"gasUsed":        rec.GasUsed,
+			"executedAt":     rec.ExecutedAt,
+		})
+		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"status": "accepted", "commitmentHash": body.CommitmentHash})
@@ -316,28 +373,30 @@ func (h *Handler) RegisterDcaGroup(c *gin.Context) {
 		for _, round := range body.Rounds {
 			hashes = append(hashes, round.CommitmentHash)
 		}
-		go h.forwardSharesToKeeper(hashes, body.EncryptedShares)
+		go func() {
+			if err := h.forwardSharesToKeeper(hashes, body.EncryptedShares); err != nil {
+				log.Printf("[Handler] forward DCA shares to keeper: %v", err)
+			}
+		}()
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"status": "accepted", "saved": saved})
 }
 
-func (h *Handler) forwardSharesToKeeper(commitmentHashes []string, shares []encryptedShare) {
+func (h *Handler) forwardSharesToKeeper(commitmentHashes []string, shares []encryptedShare) error {
 	payload := sharesPayload{
 		CommitmentHashes: commitmentHashes,
 		EncryptedShares:  shares,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("[Handler] marshal shares payload: %v", err)
-		return
+		return fmt.Errorf("marshal shares payload: %w", err)
 	}
 
 	url := strings.TrimRight(h.keeperURL, "/") + "/api/shares"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		log.Printf("[Handler] build shares request: %v", err)
-		return
+		return fmt.Errorf("build shares request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if h.keeperAPISecret != "" {
@@ -345,13 +404,13 @@ func (h *Handler) forwardSharesToKeeper(commitmentHashes []string, shares []encr
 	}
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		log.Printf("[Handler] forward shares to keeper: %v", err)
-		return
+		return fmt.Errorf("forward shares to keeper: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		log.Printf("[Handler] keeper /api/shares returned %d", resp.StatusCode)
+		return fmt.Errorf("keeper /api/shares returned %d", resp.StatusCode)
 	}
+	return nil
 }
 
 func parseChainID(c *gin.Context) int64 {
