@@ -345,10 +345,9 @@ export default function StrategyPage() {
       //    tx confirms (see the useEffect below). Posting earlier races the
       //    keeper's on-chain status check and yields a 422.
       //
-      // For MARKET orders we tag the backend kind as "MARKET" so the monitor
-      // service fires the keeper trigger immediately rather than polling
-      // Chainlink. On-chain and from the keeper's perspective it is still
-      // kind=0 (ORDER_FILL) — the sentinel price makes the fill check pass.
+      // Backend stores user-facing strategy kind. On-chain and on the keeper
+      // wire, LIMIT and MARKET both use kind=0 (ORDER_FILL); MARKET uses a
+      // sentinel price that makes the fill check pass.
       const isMarketOrder = kind === "MARKET";
       setPostSynced(false);
       setMarketExecutionHash(isMarketOrder ? commitmentHash : null);
@@ -357,7 +356,7 @@ export default function StrategyPage() {
       backendSyncHashRef.current = null;
       setPendingPost({
         commitmentHash,
-        kind:       isMarketOrder ? "MARKET" : "ORDER_FILL",
+        kind:       isMarketOrder ? "MARKET" : "LIMIT",
         chainId,
         tokenIn:    tokenIn.address,
         tokenOut:   tokenOut.address,

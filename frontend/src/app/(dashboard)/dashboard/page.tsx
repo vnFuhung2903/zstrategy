@@ -24,7 +24,7 @@ export default function DashboardPage() {
   const settled = stats
     ? stats.total_executions + stats.total_cancelled + stats.total_expired
     : 0;
-  const orderFillCount = stats?.by_kind?.ORDER_FILL?.total_registered ?? 0;
+  const limitCount = stats?.by_kind?.LIMIT?.total_registered ?? 0;
   const marketCount = stats?.by_kind?.MARKET?.total_registered ?? 0;
   const dcaCount = stats?.by_kind?.DCA?.total_registered ?? 0;
 
@@ -139,7 +139,7 @@ export default function DashboardPage() {
             <CardContent>
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { label: "Order Fill", value: orderFillCount },
+                  { label: "Limit", value: limitCount },
                   { label: "Market", value: marketCount },
                   { label: "DCA", value: dcaCount },
                 ].map((item) => (
