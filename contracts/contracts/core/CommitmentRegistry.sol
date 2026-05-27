@@ -80,7 +80,7 @@ contract CommitmentRegistry is ReentrancyGuard {
     ///         its price denominated in USD. The pair price (tokenIn/tokenOut) is derived
     ///         on-chain: price = (tokenIn_USD / tokenOut_USD) with tokenOut feed decimals precision.
     mapping(address token => IPriceFeed) public priceFeeds;
-    mapping(bytes32 => CommitmentRecord) public commitments;
+    mapping(bytes32 => CommitmentRecord) private commitments;
     mapping(bytes32 => bool)             public nullifiers;
 
     // ── Events ─────────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ contract CommitmentRegistry is ReentrancyGuard {
         address _dexAdapter,
         address _guardian
     ) {
-        require(_gas_vault != address(0), "Registry: zero verifier");
+        require(_gas_vault != address(0), "Registry: zero gas vault");
         require(_collateral_vault != address(0), "Registry: zero vault");
         require(_dexAdapter != address(0), "Registry: zero adapter");
         require(_guardian != address(0), "Registry: zero guardian");
@@ -481,7 +481,7 @@ contract CommitmentRegistry is ReentrancyGuard {
     // ── Internal ───────────────────────────────────────────────────────────
 
     /// @dev Compute reimbursement cost and forward it to the keeper EOA.
-    ///      No-op when the gas tank is disabled or when the owner self-executed.
+    ///      No-op when the owner self-executed.
     function _debitGas(address owner_, uint256 gasStart, bytes32 commitmentHash) internal {
         if (msg.sender == owner_) return;
         uint256 cost = ((gasStart - gasleft()) * tx.gasprice * KEEPER_PREMIUM_BPS) / 10000;
