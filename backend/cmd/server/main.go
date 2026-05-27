@@ -98,7 +98,7 @@ func main() {
 		Addr:         fmt.Sprintf(":%s", cfg.Port),
 		Handler:      router,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		WriteTimeout: 3 * time.Minute,
 		IdleTimeout:  60 * time.Second,
 	}
 
