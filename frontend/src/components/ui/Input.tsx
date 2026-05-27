@@ -6,10 +6,15 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   hint?: string;
   error?: string;
   suffix?: string;
+  actionLabel?: string;
+  actionDisabled?: boolean;
+  onAction?: () => void;
 }
 
 const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ className, label, hint, error, suffix, id, ...props }, ref) => {
+  ({ className, label, hint, error, suffix, actionLabel, actionDisabled, onAction, id, ...props }, ref) => {
+    const hasAction = !!actionLabel && !!onAction;
+
     return (
       <div className="flex flex-col gap-1.5">
         {label && (
@@ -32,15 +37,30 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
               "outline-none transition-all duration-150",
               "focus:border-primary-container focus:glow-primary",
               error && "border-error focus:border-error",
-              suffix && "pr-12",
+              suffix && !hasAction && "pr-12",
+              hasAction && !suffix && "pr-16",
+              hasAction && suffix && "pr-24",
               className,
             )}
             {...props}
           />
           {suffix && (
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-on-surface-variant font-medium">
+            <span className={cn(
+              "absolute top-1/2 -translate-y-1/2 text-xs text-on-surface-variant font-medium",
+              hasAction ? "right-14" : "right-3",
+            )}>
               {suffix}
             </span>
+          )}
+          {hasAction && (
+            <button
+              type="button"
+              disabled={actionDisabled}
+              onClick={onAction}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-primary-container font-medium hover:text-primary-fixed disabled:text-on-surface-variant/40"
+            >
+              {actionLabel}
+            </button>
           )}
         </div>
         {hint && !error && (
