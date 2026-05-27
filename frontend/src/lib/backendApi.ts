@@ -57,6 +57,15 @@ export interface PostDcaGroupBody {
   }>;
 }
 
+export interface ExecutedStrategyResponse {
+  status: "executed";
+  commitmentHash: `0x${string}`;
+  txHash: `0x${string}`;
+  blockNumber: number;
+  gasUsed: number;
+  executedAt: string | null;
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BACKEND_BASE}${path}`, {
     method: "POST",
@@ -72,6 +81,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const backendApi = {
-  postStrategy:  (body: PostStrategyBody)  => postJson<{ status: string; commitmentHash: string }>("/api/v1/strategies", body),
-  postDcaGroup:  (body: PostDcaGroupBody)  => postJson<{ status: string; saved: number }>("/api/v1/dca-strategies", body),
+  postStrategy:        (body: PostStrategyBody) => postJson<{ status: string; commitmentHash: string }>("/api/v1/strategies", body),
+  postStrategyAndWait: (body: PostStrategyBody) => postJson<ExecutedStrategyResponse>("/api/v1/strategies/execute-sync", body),
+  postDcaGroup:        (body: PostDcaGroupBody) => postJson<{ status: string; saved: number }>("/api/v1/dca-strategies", body),
 };
