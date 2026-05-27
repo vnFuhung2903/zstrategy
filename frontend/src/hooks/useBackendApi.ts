@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useChainId } from "wagmi";
-import { api, type ExecutionKind, type ExecutionStatus } from "@/lib/api";
+import { api, type StrategyKind, type ExecutionStatus } from "@/lib/api";
 
 export function useStats() {
   const chainId = useChainId();
@@ -17,7 +17,7 @@ export function useStats() {
 export function useExecutions(
   limit = 20,
   offset = 0,
-  filters: { q?: string; status?: ExecutionStatus | ""; kind?: ExecutionKind | ""; chainId?: number } = {},
+  filters: { q?: string; status?: ExecutionStatus | ""; kind?: StrategyKind | ""; chainId?: number } = {},
 ) {
   const chainId = useChainId();
   const selectedChainId = filters.chainId ?? chainId;

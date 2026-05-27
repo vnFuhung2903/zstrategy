@@ -11,12 +11,11 @@ const BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:80
 export interface PostStrategyBody {
   commitmentHash: `0x${string}`;
   /**
-   * Backend orchestration kind. On-chain the commitment is always registered
-   * as kind=0 (ORDER_FILL) for both ORDER_FILL and MARKET — `MARKET` only
-   * tells the backend's MonitorService to fire the keeper trigger on the
-   * first tick instead of polling Chainlink. DCA is its own circuit.
+   * User-facing strategy kind. On-chain, LIMIT and MARKET are both registered
+   * as kind=0 (ORDER_FILL); the backend translates them to the keeper wire
+   * kind when execution is triggered. DCA is its own circuit.
    */
-  kind: "ORDER_FILL" | "DCA" | "MARKET";
+  kind: "LIMIT" | "MARKET" | "DCA";
   chainId: number;
   tokenIn: `0x${string}`;
   tokenOut: `0x${string}`;
