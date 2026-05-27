@@ -49,10 +49,3 @@ export function getSharesForCommitment(commitmentHash: string): ShareRow[] {
     receivedAt:     r.received_at as number,
   }));
 }
-
-export function shareCountForCommitment(commitmentHash: string): number {
-  const row = getDb()
-    .prepare("SELECT COUNT(*) AS cnt FROM shares WHERE commitment_hash = ?")
-    .get(commitmentHash) as { cnt: number };
-  return row.cnt;
-}

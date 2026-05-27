@@ -64,7 +64,6 @@ app.get("/api/health", (_req: Request, res: Response) => {
     status:        "ok",
     uptimeSeconds: now - state.startedAt,
     chainId:       config.chainId,
-    blockNumber:   state.blockNumber,
     executedCount: state.executedCount,
     failedCount:   state.failedCount,
   });
@@ -223,6 +222,7 @@ app.post("/api/execute", requireSecret, async (req: Request, res: Response) => {
   }
 
   // ── Re-verify fill condition independently ────────────────────────────────
+  let executionTimestamp: number | undefined;
   if (kind === "DCA") {
     const now = Math.floor(Date.now() / 1000);
     if (typeof scheduledLo !== "number" || typeof scheduledHi !== "number") {
@@ -233,6 +233,7 @@ app.post("/api/execute", requireSecret, async (req: Request, res: Response) => {
       res.status(422).json({ error: "Fill condition not met (re-verify)" });
       return;
     }
+    executionTimestamp = now;
   } else {
     // ORDER_FILL: fetch live oracle price. Re-verification is part of the B1
     // security model — if we can't independently confirm the condition we MUST
@@ -289,6 +290,7 @@ app.post("/api/execute", requireSecret, async (req: Request, res: Response) => {
     nullifier,
     scheduledLo: typeof scheduledLo === "number" ? scheduledLo : undefined,
     scheduledHi: typeof scheduledHi === "number" ? scheduledHi : undefined,
+    executionTimestamp,
     userSecret,
   })
     .then(() => {

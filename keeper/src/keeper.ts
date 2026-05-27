@@ -5,7 +5,6 @@ export const state: KeeperState = {
   startedAt:     Math.floor(Date.now() / 1000),
   executedCount: 0,
   failedCount:   0,
-  blockNumber:   0,
 };
 
 // ── Main entry point ────────────────────────────────────────────────────────
