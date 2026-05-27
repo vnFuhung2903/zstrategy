@@ -31,6 +31,7 @@ import { backendApi, type PostDcaGroupBody } from "@/lib/backendApi";
 type Side = "BUY" | "SELL";
 
 const INTERVALS: Record<string, number> = {
+  "1 MIN": 60,
   "6H":  6 * 3600,
   "24H": 86400,
   "7D":  7 * 86400,
