@@ -86,17 +86,6 @@ export async function saveStrategy(record: StrategyRecord): Promise<void> {
   db.close();
 }
 
-export async function getStrategy(commitmentHash: `0x${string}`): Promise<StrategyRecord | undefined> {
-  const db = await openDb();
-  const result = await new Promise<StrategyRecord | undefined>((resolve, reject) => {
-    const req = db.transaction(STORE, "readonly").objectStore(STORE).get(commitmentHash);
-    req.onsuccess = () => resolve(req.result as StrategyRecord | undefined);
-    req.onerror = () => reject(req.error);
-  });
-  db.close();
-  return result;
-}
-
 export async function listStrategiesForOwner(owner: `0x${string}`): Promise<StrategyRecord[]> {
   const db = await openDb();
   const ownerKey = owner.toLowerCase() as `0x${string}`;
@@ -111,17 +100,6 @@ export async function listStrategiesForOwner(owner: `0x${string}`): Promise<Stra
   });
   db.close();
   return result;
-}
-
-export async function deleteStrategy(commitmentHash: `0x${string}`): Promise<void> {
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).delete(commitmentHash);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-  db.close();
 }
 
 // ── DCA round store ───────────────────────────────────────────────────────────
@@ -160,35 +138,4 @@ export async function saveDcaRounds(rounds: DcaRoundRecord[]): Promise<void> {
     tx.onerror = () => reject(tx.error);
   });
   db.close();
-}
-
-export async function listDcaRoundsForGroup(dcaGroupId: `0x${string}`): Promise<DcaRoundRecord[]> {
-  const db = await openDb();
-  const result = await new Promise<DcaRoundRecord[]>((resolve, reject) => {
-    const req = db
-      .transaction(DCA_STORE, "readonly")
-      .objectStore(DCA_STORE)
-      .index("dcaGroupId")
-      .getAll(dcaGroupId);
-    req.onsuccess = () => resolve((req.result as DcaRoundRecord[]) ?? []);
-    req.onerror = () => reject(req.error);
-  });
-  db.close();
-  return result.sort((a, b) => a.roundIndex - b.roundIndex);
-}
-
-export async function listDcaRoundsForOwner(owner: `0x${string}`): Promise<DcaRoundRecord[]> {
-  const db = await openDb();
-  const ownerKey = owner.toLowerCase() as `0x${string}`;
-  const result = await new Promise<DcaRoundRecord[]>((resolve, reject) => {
-    const req = db
-      .transaction(DCA_STORE, "readonly")
-      .objectStore(DCA_STORE)
-      .index("owner")
-      .getAll(ownerKey);
-    req.onsuccess = () => resolve((req.result as DcaRoundRecord[]) ?? []);
-    req.onerror = () => reject(req.error);
-  });
-  db.close();
-  return result;
 }
