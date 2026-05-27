@@ -11,16 +11,24 @@ function optional(key: string, fallback: string): string {
   return process.env[key] ?? fallback;
 }
 
+function optionalBigInt(key: string, fallback: string): bigint {
+  return BigInt(optional(key, fallback));
+}
+
 export const config = {
   rpcUrl:                   required("RPC_URL"),
   chainId:                  parseInt(required("CHAIN_ID")),
   keeperPrivateKey:         required("KEEPER_PRIVATE_KEY"),
 
   registryAddress:          required("COMMITMENT_REGISTRY_ADDRESS"),
-  vaultAddress:             required("COLLATERAL_VAULT_ADDRESS"),
 
   maxRetries:               parseInt(optional("MAX_RETRIES", "5")),
   retryBaseDelayMs:         parseInt(optional("RETRY_BASE_DELAY_MS", "2000")),
+
+  // Execution transaction sizing. Gas limit is estimated from the actual
+  // executeCommitment calldata, then multiplied by this buffer.
+  executionGasBufferBps:    parseInt(optional("EXECUTION_GAS_BUFFER_BPS", "13000")),
+  gasPriceBuffer:           optionalBigInt("GAS_PRICE_BUFFER", "10"),
 
   apiPort:                  parseInt(optional("API_PORT", "3001")),
   apiSecret:                required("API_SECRET"),

@@ -51,10 +51,11 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
       );
 
       let proof: `0x${string}`;
+      let fillRef = 0;
       const proofTimer = proofGenerationSeconds.labels(req.kind).startTimer();
 
       if (req.kind === "DCA") {
-        const blockTimestamp = Math.floor(Date.now() / 1000);
+        fillRef = req.executionTimestamp ?? Math.floor(Date.now() / 1000);
         proof = await generateDcaProof(
           {
             scheduledLo:    req.scheduledLo!,
@@ -62,7 +63,7 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
             nonce:          req.nonce as `0x${string}`,
             userSecret:     req.userSecret as `0x${string}`,
             commitmentHash: req.commitmentHash as `0x${string}`,
-            blockTimestamp,
+            executionTimestamp: fillRef,
             nullifier:      req.nullifier as `0x${string}`,
             tokenIn:        req.tokenIn  as `0x${string}`,
             tokenOut:       req.tokenOut as `0x${string}`,
@@ -103,25 +104,30 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
       // ~10× in stable periods but keeps fills landing through fee spikes.
       // Frontend's PER_EXECUTION_GAS_PRICE_WEI is sized to match (see
       // `useGasVault.ts`).
-      const GAS_PRICE_BUFFER = 10n;
       const feeData = await registryWriter.runner!.provider!.getFeeData();
       const baseGasPrice = feeData.gasPrice ?? ethers.parseUnits("1", "gwei");
-      const previewGasPrice = baseGasPrice * GAS_PRICE_BUFFER;
+      const previewGasPrice = baseGasPrice * config.gasPriceBuffer;
 
-      // Pin gasLimit so ethers v6 skips eth_estimateGas. Arbitrum's
-      // estimateGas binary-searches gas values and is known to return
-      // spurious empty-data reverts during that search for txs whose
-      // sub-calls (UniswapV3 swap, verifier) are complex — even when an
-      // eth_call at a fixed gas would succeed. 5_000_000 is ~4× the
-      // worst-case expected ~1.2M (UltraHonk verify ~800k + swap ~200k +
-      // vault/debit overhead). Reverted txs on Arbitrum still consume gas,
-      // so we don't want this absurdly high.
-      const PINNED_GAS_LIMIT = 5_000_000n;
+      const estimatedGas = await registryWriter.executeCommitment.estimateGas(
+        req.commitmentHash,
+        req.nullifier,
+        proof,
+        fillRef,
+        { gasPrice: previewGasPrice },
+      );
+      const bufferedGasLimit =
+        estimatedGas * BigInt(config.executionGasBufferBps) / 10_000n;
+      console.log(
+        `[Submitter] gas estimate=${estimatedGas.toString()} ` +
+        `limit=${bufferedGasLimit.toString()} gasPrice=${previewGasPrice.toString()}`,
+      );
+
       const tx: ethers.TransactionResponse = await registryWriter.executeCommitment(
         req.commitmentHash,
         req.nullifier,
         proof,
-        { gasPrice: previewGasPrice, gasLimit: PINNED_GAS_LIMIT },
+        fillRef,
+        { gasPrice: previewGasPrice, gasLimit: bufferedGasLimit },
       );
 
       console.log(`[Submitter] tx submitted: ${tx.hash}`);
@@ -153,10 +159,10 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
             from:     await (registryWriter.runner as ethers.Signer).getAddress(),
             data:     registryWriter.interface.encodeFunctionData(
               "executeCommitment",
-              [req.commitmentHash, req.nullifier, proof],
+              [req.commitmentHash, req.nullifier, proof, fillRef],
             ),
             gasPrice: previewGasPrice,
-            gasLimit: PINNED_GAS_LIMIT,
+            gasLimit: bufferedGasLimit,
             blockTag: receipt?.blockNumber,
           });
         } catch (replayErr) {
