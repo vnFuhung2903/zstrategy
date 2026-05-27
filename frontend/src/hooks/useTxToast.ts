@@ -30,9 +30,10 @@ interface UseTxToastArgs {
   isSuccess:     boolean;
   error:         Error | null;
   label:         string;
+  successToastEnabled?: boolean;
 }
 
-export function useTxToast({ hash, isConfirming, isSuccess, error, label }: UseTxToastArgs): void {
+export function useTxToast({ hash, isConfirming, isSuccess, error, label, successToastEnabled = true }: UseTxToastArgs): void {
   const chainId       = useChainId();
   const toastIdRef    = useRef<string | number | null>(null);
   const handledHashRef = useRef<string | undefined>(undefined);
@@ -58,6 +59,11 @@ export function useTxToast({ hash, isConfirming, isSuccess, error, label }: UseT
   // Confirmed — flip to success with explorer link.
   useEffect(() => {
     if (!isSuccess || !hash) return;
+    if (!successToastEnabled) {
+      if (toastIdRef.current) toast.dismiss(toastIdRef.current);
+      toastIdRef.current = null;
+      return;
+    }
     const url = getTxUrl(chainId, hash);
     toast.success(`${label} confirmed`, {
       id: toastIdRef.current ?? undefined,
@@ -68,7 +74,7 @@ export function useTxToast({ hash, isConfirming, isSuccess, error, label }: UseT
         : undefined,
     });
     toastIdRef.current = null;
-  }, [isSuccess, hash, chainId, label]);
+  }, [isSuccess, hash, chainId, label, successToastEnabled]);
 
   // Failure — wagmi exposes `shortMessage` on viem-thrown errors which is
   // much more user-friendly than the full stack-trace message.
