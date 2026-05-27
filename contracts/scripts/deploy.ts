@@ -1,28 +1,26 @@
 /**
- * zstrategy Phase 2/4 deployment script — Arbitrum Sepolia testnet.
+ * Full zstrategy deployment script.
  *
  * Run with:
  *   npx hardhat run scripts/deploy.ts --network arbitrumSepolia
  *
- * Our contracts deployed: OrderFillVerifier, DCAVerifier, UniswapV3Adapter,
- *   CollateralVault, CommitmentRegistry, GasVault.
+ * Optional env overrides let you reuse already deployed components:
+ *   ORDER_FILL_VERIFIER_ADDRESS
+ *   DCA_VERIFIER_ADDRESS
+ *   DEX_ADAPTER_ADDRESS
+ *   COLLATERAL_VAULT_ADDRESS
+ *   GAS_VAULT_ADDRESS
  *
- * Required env vars (real testnet addresses — not mocked):
- *   WETH_ADDRESS            — e.g. 0x980B62Da83eFf3D4576C647993b0c1D7faf17c73 (Arb Sepolia WETH)
- *   USDC_ADDRESS            — e.g. 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d (Arb Sepolia USDC)
- *   UNISWAP_ROUTER_ADDRESS  — Uniswap v3 SwapRouter on this chain
+ * Required env vars for a fresh deploy:
+ *   UNISWAP_ROUTER_ADDRESS
+ *   WETH_ADDRESS
+ *   USDC_ADDRESS
+ *   CHAINLINK_PRICE_FEED_WETH_USD
+ *   CHAINLINK_PRICE_FEED_USDC_USD
  *
- * Optional env vars:
- *   ORDER_FILL_VERIFIER_ADDRESS — reuse an existing OrderFillVerifier
- *   DCA_VERIFIER_ADDRESS        — reuse an existing DCAVerifier
- *   DEX_ADAPTER_ADDRESS         — reuse an existing UniswapV3Adapter
- *   GAS_VAULT_ADDRESS           — reuse an existing GasVault (avoids orphaning balances)
- *   ETH_USD_FEED_ADDRESS        — reuse a real Chainlink feed; omit to deploy MockChainlinkAggregator
- *   UNISWAP_FEE_TIER            — pool fee tier in bps×100 (default 500 = 0.05%)
- *   SWAP_DEADLINE_BUFFER        — seconds added to block.timestamp for swap deadline (default 300)
- *   MOCK_FEED_DECIMALS          — decimals for the mock feed (default 8)
- *   MOCK_FEED_INITIAL           — initial answer for the mock feed (default 300000000000 = $3000)
- *   GUARDIAN_ADDRESS            — guardian for the registry; defaults to deployer
+ * Optional token/feed pairs are configured when both env vars are present:
+ *   USDT_ADDRESS + CHAINLINK_PRICE_FEED_USDT_USD
+ *   WBTC_ADDRESS + CHAINLINK_PRICE_FEED_WBTC_USD
  */
 
 import { ethers, network } from "hardhat";
@@ -31,192 +29,294 @@ import * as path from "path";
 import * as dotenv from "dotenv";
 dotenv.config();
 
+type PriceFeedSpec = {
+  symbol: string;
+  tokenEnv: string;
+  feedEnv: string;
+  required: boolean;
+};
+
+type PriceFeedConfig = {
+  symbol: string;
+  token: string;
+  feed: string;
+};
+
 interface Deployment {
-  network:            string;
-  chainId:            number;
-  deployer:           string;
-  guardian:           string;
-  orderFillVerifier:  string;
-  dcaVerifier:        string;
-  collateralVault:    string;
+  network: string;
+  chainId: number;
+  deployer: string;
+  guardian: string;
+  orderFillVerifier: string;
+  dcaVerifier: string;
+  collateralVault: string;
   commitmentRegistry: string;
-  gasVault:           string;
-  dexAdapter:         string;
-  deployedAt:         string;
+  gasVault: string;
+  dexAdapter: string;
+  priceFeeds: Record<string, { token: string; feed: string }>;
+  deployedAt: string;
+}
+
+const PRICE_FEEDS: PriceFeedSpec[] = [
+  {
+    symbol: "WETH",
+    tokenEnv: "WETH_ADDRESS",
+    feedEnv: "CHAINLINK_PRICE_FEED_WETH_USD",
+    required: true,
+  },
+  {
+    symbol: "USDC",
+    tokenEnv: "USDC_ADDRESS",
+    feedEnv: "CHAINLINK_PRICE_FEED_USDC_USD",
+    required: true,
+  },
+  {
+    symbol: "USDT",
+    tokenEnv: "USDT_ADDRESS",
+    feedEnv: "CHAINLINK_PRICE_FEED_USDT_USD",
+    required: false,
+  },
+  {
+    symbol: "WBTC",
+    tokenEnv: "WBTC_ADDRESS",
+    feedEnv: "CHAINLINK_PRICE_FEED_WBTC_USD",
+    required: false,
+  },
+];
+
+const REGISTRY_OWNED_ABI = [
+  "function registry() view returns (address)",
+  "function setRegistry(address)",
+];
+
+function requireAddress(label: string, value: string | undefined): string {
+  if (!value || !ethers.isAddress(value)) {
+    throw new Error(`${label} is required and must be a valid address`);
+  }
+  return value;
+}
+
+function optionalAddress(label: string, value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (!ethers.isAddress(value)) {
+    throw new Error(`${label} must be a valid address when set`);
+  }
+  return value;
 }
 
 async function deployIfMissing(
-  envAddress: string | undefined,
+  envName: string,
   label: string,
   factory: () => Promise<string>,
 ): Promise<string> {
-  if (envAddress && ethers.isAddress(envAddress)) {
-    console.log(`  ${label.padEnd(20)} ${envAddress}  (reused via env)`);
+  const envAddress = optionalAddress(envName, process.env[envName]);
+  if (envAddress) {
+    console.log(`  ${label.padEnd(22)} ${envAddress}  (reused via ${envName})`);
     return envAddress;
   }
+
   const addr = await factory();
-  console.log(`  ${label.padEnd(20)} ${addr}  (deployed)`);
+  console.log(`  ${label.padEnd(22)} ${addr}  (deployed)`);
   return addr;
+}
+
+function collectPriceFeeds(): PriceFeedConfig[] {
+  const configs: PriceFeedConfig[] = [];
+
+  for (const spec of PRICE_FEEDS) {
+    const token = process.env[spec.tokenEnv];
+    const feed = process.env[spec.feedEnv];
+
+    if (!token && !feed && !spec.required) continue;
+    if (!token || !feed) {
+      throw new Error(`${spec.symbol} requires both ${spec.tokenEnv} and ${spec.feedEnv}`);
+    }
+
+    configs.push({
+      symbol: spec.symbol,
+      token: requireAddress(spec.tokenEnv, token),
+      feed: requireAddress(spec.feedEnv, feed),
+    });
+  }
+
+  return configs;
+}
+
+async function deployOrderFillVerifier(): Promise<string> {
+  const LibF = await ethers.getContractFactory(
+    "contracts/core/OrderFillVerifier.sol:ZKTranscriptLib",
+  );
+  const lib = await LibF.deploy();
+  await lib.waitForDeployment();
+
+  const VerifierF = await ethers.getContractFactory("OrderFillVerifier", {
+    libraries: { ZKTranscriptLib: await lib.getAddress() },
+  });
+  const verifier = await VerifierF.deploy();
+  await verifier.waitForDeployment();
+  return verifier.getAddress();
+}
+
+async function deployDcaVerifier(): Promise<string> {
+  const LibF = await ethers.getContractFactory(
+    "contracts/core/DCAVerifier.sol:ZKTranscriptLib",
+  );
+  const lib = await LibF.deploy();
+  await lib.waitForDeployment();
+
+  const VerifierF = await ethers.getContractFactory("DCAVerifier", {
+    libraries: { ZKTranscriptLib: await lib.getAddress() },
+  });
+  const verifier = await VerifierF.deploy();
+  await verifier.waitForDeployment();
+  return verifier.getAddress();
+}
+
+async function setVaultRegistry(label: string, address: string, registry: string) {
+  const [deployer] = await ethers.getSigners();
+  const contract = new ethers.Contract(address, REGISTRY_OWNED_ABI, deployer);
+  const current = await contract.registry();
+
+  if (current.toLowerCase() === registry.toLowerCase()) {
+    console.log(`  ${label.padEnd(22)} already points to registry`);
+    return;
+  }
+
+  await (await contract.setRegistry(registry)).wait();
+  console.log(`  ${label.padEnd(22)} setRegistry ${current} -> ${registry}`);
+}
+
+async function setVerifierIfNeeded(registry: any, kind: number, verifier: string, label: string) {
+  const current = await registry.verifiers(kind);
+  if (current.toLowerCase() === verifier.toLowerCase()) {
+    console.log(`  ${label.padEnd(22)} already configured`);
+    return;
+  }
+
+  await (await registry.setVerifier(kind, verifier)).wait();
+  console.log(`  ${label.padEnd(22)} ${verifier}`);
+}
+
+async function setPriceFeedIfNeeded(registry: any, config: PriceFeedConfig) {
+  const current = await registry.priceFeeds(config.token);
+  if (current.toLowerCase() === config.feed.toLowerCase()) {
+    console.log(`  ${`${config.symbol} price feed`.padEnd(22)} already configured`);
+    return;
+  }
+
+  await (await registry.setPriceFeed(config.token, config.feed)).wait();
+  console.log(`  ${`${config.symbol} price feed`.padEnd(22)} ${config.feed}`);
+}
+
+function deploymentPriceFeedMap(configs: PriceFeedConfig[]) {
+  return configs.reduce<Record<string, { token: string; feed: string }>>((acc, config) => {
+    acc[config.symbol] = { token: config.token, feed: config.feed };
+    return acc;
+  }, {});
 }
 
 async function main() {
   const [deployer] = await ethers.getSigners();
-  const guardian = process.env.GUARDIAN_ADDRESS ?? deployer.address;
   const chainId = Number((await ethers.provider.getNetwork()).chainId);
+  const guardian = requireAddress("GUARDIAN_ADDRESS", process.env.GUARDIAN_ADDRESS ?? deployer.address);
 
-  console.log(`\nzstrategy deploy → ${network.name} (chainId=${chainId})`);
+  if (guardian.toLowerCase() !== deployer.address.toLowerCase()) {
+    throw new Error("GUARDIAN_ADDRESS must be the deployer for this script to run setup transactions");
+  }
+
+  console.log(`\nzstrategy full deploy -> ${network.name} (chainId=${chainId})`);
   console.log(`Deployer: ${deployer.address}`);
   console.log(`Guardian: ${guardian}\n`);
 
-  // ── ERC-20s (real testnet addresses required — not mocked) ──────────────
-  if (!process.env.WETH_ADDRESS || !ethers.isAddress(process.env.WETH_ADDRESS))
-    throw new Error("WETH_ADDRESS is required");
-  if (!process.env.USDC_ADDRESS || !ethers.isAddress(process.env.USDC_ADDRESS))
-    throw new Error("USDC_ADDRESS is required");
-  const weth = process.env.WETH_ADDRESS as string;
-  const usdc = process.env.USDC_ADDRESS as string;
-  console.log(`  WETH                 ${weth}  (from env)`);
-  console.log(`  USDC                 ${usdc}  (from env)`);
+  const priceFeeds = collectPriceFeeds();
+  for (const config of priceFeeds) {
+    console.log(`  ${config.symbol.padEnd(22)} ${config.token}`);
+    console.log(`  ${`${config.symbol}/USD feed`.padEnd(22)} ${config.feed}`);
+  }
 
-  // ── Verifiers ───────────────────────────────────────────────────────────
-  // The bb-generated verifier files each declare their own `ZKTranscriptLib`
-  // (the only library Solidity decides to externalize — too large to inline).
-  // Each must be deployed and linked at factory-construction time. The other
-  // libraries (Honk, FrLib, RelationsLib, etc.) are all `internal` and
-  // inlined by solc, so no linking is needed for them.
-  //
-  // If you regenerate the verifier files via `bb write_solidity`, re-apply
-  // the contract rename (see OrderFillVerifier.sol top comment) and verify the
-  // library name is still `ZKTranscriptLib`.
-  const orderFillVerifier = await deployIfMissing(process.env.ORDER_FILL_VERIFIER_ADDRESS, "OrderFillVerifier", async () => {
-    const LibF = await ethers.getContractFactory(
-      "contracts/core/OrderFillVerifier.sol:ZKTranscriptLib"
-    );
-    const lib = await LibF.deploy();
-    await lib.waitForDeployment();
-    const VerifierF = await ethers.getContractFactory("OrderFillVerifier", {
-      libraries: { ZKTranscriptLib: await lib.getAddress() },
-    });
-    const c = await VerifierF.deploy();
-    await c.waitForDeployment();
-    return c.getAddress();
-  });
-  const dcaVerifier = await deployIfMissing(process.env.DCA_VERIFIER_ADDRESS, "DCAVerifier", async () => {
-    const LibF = await ethers.getContractFactory(
-      "contracts/core/DCAVerifier.sol:ZKTranscriptLib"
-    );
-    const lib = await LibF.deploy();
-    await lib.waitForDeployment();
-    const VerifierF = await ethers.getContractFactory("DCAVerifier", {
-      libraries: { ZKTranscriptLib: await lib.getAddress() },
-    });
-    const c = await VerifierF.deploy();
-    await c.waitForDeployment();
-    return c.getAddress();
-  });
+  const orderFillVerifier = await deployIfMissing(
+    "ORDER_FILL_VERIFIER_ADDRESS",
+    "OrderFillVerifier",
+    deployOrderFillVerifier,
+  );
+  const dcaVerifier = await deployIfMissing(
+    "DCA_VERIFIER_ADDRESS",
+    "DCAVerifier",
+    deployDcaVerifier,
+  );
 
-  // ── Price feeds (per-token USD feeds; pair price derived on-chain) ───────
-  if (!process.env.CHAINLINK_PRICE_FEED_WETH_USD || !ethers.isAddress(process.env.CHAINLINK_PRICE_FEED_WETH_USD))
-    throw new Error("CHAINLINK_PRICE_FEED_WETH_USD is required");
-  if (!process.env.CHAINLINK_PRICE_FEED_USDC_USD || !ethers.isAddress(process.env.CHAINLINK_PRICE_FEED_USDC_USD))
-    throw new Error("CHAINLINK_PRICE_FEED_USDC_USD is required");
-  const wethUsdFeed = process.env.CHAINLINK_PRICE_FEED_WETH_USD as string;
-  const usdcUsdFeed = process.env.CHAINLINK_PRICE_FEED_USDC_USD as string;
-  console.log(`  WETH/USD feed        ${wethUsdFeed}  (from env)`);
-  console.log(`  USDC/USD feed        ${usdcUsdFeed}  (from env)`);
-
-  // ── DEX adapter ─────────────────────────────────────────────────────────
-  const dexAdapter = await deployIfMissing(process.env.DEX_ADAPTER_ADDRESS, "UniswapV3Adapter", async () => {
-    const routerAddr = process.env.UNISWAP_ROUTER_ADDRESS;
-    if (!routerAddr || !ethers.isAddress(routerAddr)) throw new Error("UNISWAP_ROUTER_ADDRESS is required");
-    const feeTier      = parseInt(process.env.UNISWAP_FEE_TIER ?? "500");
+  const dexAdapter = await deployIfMissing("DEX_ADAPTER_ADDRESS", "UniswapV3Adapter", async () => {
+    const router = requireAddress("UNISWAP_ROUTER_ADDRESS", process.env.UNISWAP_ROUTER_ADDRESS);
+    const feeTier = parseInt(process.env.UNISWAP_FEE_TIER ?? "500", 10);
     const AdapterF = await ethers.getContractFactory("UniswapV3Adapter");
-    const c = await AdapterF.deploy(routerAddr, feeTier);
-    await c.waitForDeployment();
-    return c.getAddress();
+    const adapter = await AdapterF.deploy(router, feeTier);
+    await adapter.waitForDeployment();
+    return adapter.getAddress();
   });
 
-  // ── Vault + Registry (circular dep broken by setRegistry) ───────────────
-  const VaultF = await ethers.getContractFactory("CollateralVault");
-  const vault = await VaultF.deploy();
-  await vault.waitForDeployment();
-  const vaultAddr = await vault.getAddress();
-  console.log(`  CollateralVault      ${vaultAddr}  (deployed)`);
+  const collateralVault = await deployIfMissing("COLLATERAL_VAULT_ADDRESS", "CollateralVault", async () => {
+    const VaultF = await ethers.getContractFactory("CollateralVault");
+    const vault = await VaultF.deploy();
+    await vault.waitForDeployment();
+    return vault.getAddress();
+  });
+
+  const gasVault = await deployIfMissing("GAS_VAULT_ADDRESS", "GasVault", async () => {
+    const GasVaultF = await ethers.getContractFactory("GasVault");
+    const vault = await GasVaultF.deploy();
+    await vault.waitForDeployment();
+    return vault.getAddress();
+  });
 
   const RegistryF = await ethers.getContractFactory("CommitmentRegistry");
-  const registry = await RegistryF.deploy(orderFillVerifier, vaultAddr, dexAdapter, guardian);
+  const registry = await RegistryF.deploy(gasVault, collateralVault, dexAdapter, guardian);
   await registry.waitForDeployment();
-  const registryAddr = await registry.getAddress();
-  console.log(`  CommitmentRegistry   ${registryAddr}  (deployed)`);
+  const commitmentRegistry = await registry.getAddress();
+  console.log(`  ${"CommitmentRegistry".padEnd(22)} ${commitmentRegistry}  (deployed)`);
 
-  // ── Wiring ──────────────────────────────────────────────────────────────
-  await (await vault.setRegistry(registryAddr)).wait();
-  console.log("  vault.setRegistry    ✓");
+  await setVaultRegistry("CollateralVault", collateralVault, commitmentRegistry);
+  await setVaultRegistry("GasVault", gasVault, commitmentRegistry);
 
-  const registryAsGuardian =
-    guardian === deployer.address
-      ? registry
-      : registry.connect(await ethers.getSigner(guardian));
+  await setVerifierIfNeeded(registry, 0, orderFillVerifier, "Verifier ORDER_FILL");
+  await setVerifierIfNeeded(registry, 1, dcaVerifier, "Verifier DCA");
 
-  await (await (registryAsGuardian as any).setPriceFeed(weth, wethUsdFeed)).wait();
-  await (await (registryAsGuardian as any).setPriceFeed(usdc, usdcUsdFeed)).wait();
-  console.log("  setPriceFeed (×2)    ✓");
+  for (const config of priceFeeds) {
+    await setPriceFeedIfNeeded(registry, config);
+  }
 
-  await (await (registryAsGuardian as any).setVerifier(1, dcaVerifier)).wait();
-  console.log("  setVerifier DCA      ✓");
-
-  // ── GasVault (prepaid keeper-gas reimbursement) ─────────────────────────
-  // Same circular-deploy dance as CollateralVault: deploy, then setRegistry.
-  // Then wire into registry so executeCommitment debits the owner's ETH and
-  // forwards it (with KEEPER_PREMIUM_BPS = 120%) to the keeper EOA.
-  // Honours GAS_VAULT_ADDRESS env override so re-running the deploy reuses
-  // the existing tank rather than orphaning user balances.
-  const gasVaultAddr = await deployIfMissing(process.env.GAS_VAULT_ADDRESS, "GasVault", async () => {
-    const GasVaultF = await ethers.getContractFactory("GasVault");
-    const gv = await GasVaultF.deploy();
-    await gv.waitForDeployment();
-    const addr = await gv.getAddress();
-    await (await gv.setRegistry(registryAddr)).wait();
-    return addr;
-  });
-
-  await (await (registryAsGuardian as any).setGasVault(gasVaultAddr)).wait();
-  console.log("  setGasVault          ✓");
-
-  // ── Persist ─────────────────────────────────────────────────────────────
   const out: Deployment = {
-    network:            network.name,
+    network: network.name,
     chainId,
-    deployer:           deployer.address,
+    deployer: deployer.address,
     guardian,
     orderFillVerifier,
     dcaVerifier,
-    collateralVault:    vaultAddr,
-    commitmentRegistry: registryAddr,
-    gasVault:           gasVaultAddr,
+    collateralVault,
+    commitmentRegistry,
+    gasVault,
     dexAdapter,
-    deployedAt:         new Date().toISOString(),
+    priceFeeds: deploymentPriceFeedMap(priceFeeds),
+    deployedAt: new Date().toISOString(),
   };
 
   const dir = path.join(__dirname, "..", "deployments");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${network.name}.json`);
   fs.writeFileSync(file, JSON.stringify(out, null, 2));
+
   console.log(`\nDeployment written to ${path.relative(process.cwd(), file)}`);
-  console.log(`\nFrontend env (next .env.local):`);
-  console.log(`  NEXT_PUBLIC_COMMITMENT_REGISTRY_ADDRESS=${registryAddr}`);
-  console.log(`  NEXT_PUBLIC_COLLATERAL_VAULT_ADDRESS=${vaultAddr}`);
-  console.log(`  NEXT_PUBLIC_GAS_VAULT_ADDRESS=${gasVaultAddr}`);
-  console.log(`\nKeeper env (.env):`);
-  console.log(`  COMMITMENT_REGISTRY_ADDRESS=${registryAddr}`);
-  console.log(`  COLLATERAL_VAULT_ADDRESS=${vaultAddr}`);
-  console.log(`  GAS_VAULT_ADDRESS=${gasVaultAddr}`);
-  console.log(`  CHAINLINK_PRICE_FEED_WETH_USD=${wethUsdFeed}`);
-  console.log(`  CHAINLINK_PRICE_FEED_USDC_USD=${usdcUsdFeed}`);
+  console.log("\nFrontend env:");
+  console.log(`  NEXT_PUBLIC_COMMITMENT_REGISTRY_ADDRESS=${commitmentRegistry}`);
+  console.log(`  NEXT_PUBLIC_COLLATERAL_VAULT_ADDRESS=${collateralVault}`);
+  console.log(`  NEXT_PUBLIC_GAS_VAULT_ADDRESS=${gasVault}`);
+  console.log("\nKeeper env:");
+  console.log(`  COMMITMENT_REGISTRY_ADDRESS=${commitmentRegistry}`);
+  console.log(`  COLLATERAL_VAULT_ADDRESS=${collateralVault}`);
+  console.log(`  GAS_VAULT_ADDRESS=${gasVault}`);
   console.log(`  CHAIN_ID=${chainId}`);
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
