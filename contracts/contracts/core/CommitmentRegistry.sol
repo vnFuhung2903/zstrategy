@@ -24,23 +24,23 @@ contract CommitmentRegistry is ReentrancyGuard {
 
     /// @notice Determines which verifier and public-input layout to use at execution.
     ///         ORDER_FILL (0): reads Chainlink oracle price; verifier = verifiers[0].
-    ///         DCA        (1): uses block.timestamp as fill time; verifier = verifiers[1].
+    ///         DCA        (1): uses a freshness-checked execution timestamp; verifier = verifiers[1].
     enum CommitmentKind { ORDER_FILL, DCA }
 
     struct CommitmentRecord {
         // Slot 0 — packed (20 + 8 + 1 + 1 = 30 bytes ≤ 32)
-        address          owner;    // User who registered this commitment
-        uint64           expiry;   // Unix timestamp after which commitment is expired
+        address owner;            // User who registered this commitment
+        uint64 expiry;            // Unix timestamp after which commitment is expired
         CommitmentStatus status;
-        CommitmentKind   kind;
+        CommitmentKind kind;
         // Slot 1
-        address  tokenIn;          // Collateral token (token being sold / spent)
+        address tokenIn;          // Collateral token (token being sold / spent)
         // Slot 2
-        address  tokenOut;         // Token to receive after swap
+        address tokenOut;         // Token to receive after swap
         // Slot 3
-        uint256  size;             // Amount of tokenIn locked in vault
+        uint256 size;             // Amount of tokenIn locked in vault
         // Slot 4
-        uint256  minOut;           // Minimum tokenOut (slippage protection; encrypted pre-execution)
+        uint256 minOut;           // Minimum tokenOut (slippage protection; encrypted pre-execution)
     }
 
     // ── State ──────────────────────────────────────────────────────────────
@@ -48,38 +48,29 @@ contract CommitmentRegistry is ReentrancyGuard {
     /// @notice Per-kind verifier registry. Set via setVerifier(); never immutable so
     ///         new circuit versions can be deployed without redeploying the registry.
     ///         verifiers[0] = ORDER_FILL (UltraHonk, Chainlink public input)
-    ///         verifiers[1] = DCA        (UltraHonk, block.timestamp public input)
+    ///         verifiers[1] = DCA        (UltraHonk, execution-timestamp public input)
     mapping(uint8 => IVerifier) public verifiers;
-    CollateralVault public immutable vault;
-    IDEXAdapter     public           dexAdapter;
+    CollateralVault public vault;
+    IDEXAdapter public dexAdapter;
 
     /// @notice Prepaid gas-tank vault. When set, executeCommitment debits the
     ///         strategy owner's balance and forwards ETH to the keeper EOA
     ///         (`msg.sender`) at fill time. Self-execution (owner == sender)
     ///         skips the debit. Zero address means the gas tank is disabled —
     ///         used for older test fixtures that don't deploy GasVault.
-    GasVault        public           gasVault;
+    GasVault public gasVault;
 
     address public guardian;
-    bool    public paused;
-
-    /// @notice Volume tracking for circuit breaker: per-token rolling 1-hour window.
-    ///         Sums across tokens are nonsensical (different decimals + denominations),
-    ///         so each tokenIn has its own baseline + window.
-    mapping(address tokenIn => uint256) public volumeBaseline;
-    mapping(address tokenIn => uint256) public currentHourVolume;
-    mapping(address tokenIn => uint256) public currentHourStart;
-    uint256 public constant CIRCUIT_BREAKER_MULTIPLIER = 10;
-    uint256 public constant HOUR = 3600;
+    bool public paused;
 
     /// @notice Keeper reimbursement = gasUsed × tx.gasprice × (BPS / 10000).
     ///         12000 = 120% — flat 20% premium over raw cost.
     uint256 public constant KEEPER_PREMIUM_BPS = 12000;
 
-    /// @notice Fixed gas estimate for the post-measurement ops (the debit call
-    ///         + Debited/CommitmentExecuted events). Calibrated empirically;
-    ///         a small over-estimate is preferable to under-paying the keeper.
-    uint256 public constant GAS_OVERHEAD = 30000;
+    /// @notice DCA proofs use a keeper-chosen execution timestamp. Settlement
+    ///         must follow soon after so the timestamp remains anchored to the
+    ///         current chain time without requiring exact block prediction.
+    uint256 public constant DCA_FILL_REF_MAX_AGE = 5 minutes;
 
     /// @notice Maximum age of a Chainlink answer accepted at fill time.
     ///         Defaults to 1 hour; guardian may widen for feeds with longer heartbeat.
@@ -89,7 +80,6 @@ contract CommitmentRegistry is ReentrancyGuard {
     ///         its price denominated in USD. The pair price (tokenIn/tokenOut) is derived
     ///         on-chain: price = (tokenIn_USD / tokenOut_USD) with tokenOut feed decimals precision.
     mapping(address token => IPriceFeed) public priceFeeds;
-
     mapping(bytes32 => CommitmentRecord) public commitments;
     mapping(bytes32 => bool)             public nullifiers;
 
@@ -117,6 +107,7 @@ contract CommitmentRegistry is ReentrancyGuard {
     event CommitmentCancelled(bytes32 indexed commitmentHash, address indexed owner);
     event CommitmentExpired(bytes32 indexed commitmentHash, address indexed owner);
     event DEXAdapterChanged(address indexed oldAdapter, address indexed newAdapter);
+    event CollateralVaultChanged(address indexed oldVault, address indexed newVault);
     event GasVaultChanged(address indexed oldVault, address indexed newVault);
     event PriceFeedSet(address indexed token, address indexed feed);
     event OracleStalenessSet(uint256 oldValue, uint256 newValue);
@@ -126,18 +117,18 @@ contract CommitmentRegistry is ReentrancyGuard {
     // ── Constructor ────────────────────────────────────────────────────────
 
     constructor(
-        address _verifier,
-        address _vault,
+        address _gas_vault,
+        address _collateral_vault,
         address _dexAdapter,
         address _guardian
     ) {
-        require(_verifier   != address(0), "Registry: zero verifier");
-        require(_vault      != address(0), "Registry: zero vault");
+        require(_gas_vault != address(0), "Registry: zero verifier");
+        require(_collateral_vault != address(0), "Registry: zero vault");
         require(_dexAdapter != address(0), "Registry: zero adapter");
-        require(_guardian   != address(0), "Registry: zero guardian");
+        require(_guardian != address(0), "Registry: zero guardian");
 
-        verifiers[uint8(CommitmentKind.ORDER_FILL)] = IVerifier(_verifier);
-        vault      = CollateralVault(_vault);
+        gasVault   = GasVault(payable(_gas_vault));
+        vault      = CollateralVault(_collateral_vault);
         dexAdapter = IDEXAdapter(_dexAdapter);
         guardian   = _guardian;
     }
@@ -256,18 +247,18 @@ contract CommitmentRegistry is ReentrancyGuard {
 
     /// @notice Execute a commitment by providing a valid ZK proof.
     ///         Can be called by the keeper or by the user themselves (self-execution fallback).
-    ///
-    ///         The oracle price is read from the configured Chainlink feed at execution
-    ///         time and used as the public input to the verifier — callers cannot supply
-    ///         it. The user therefore must produce a proof bound to the live feed value
-    ///         (not a pre-computed value).
+    ///         ORDER_FILL reads the Chainlink pair price on-chain. DCA uses
+    ///         fillRef as the execution timestamp proven by the circuit,
+    ///         then checks that it is recent relative to block.timestamp.
     /// @param commitmentHash  The commitment to execute.
     /// @param nullifier       Prevents double-execution (public output of ZK circuit).
     /// @param proof           Serialised UltraPlonk proof bytes.
+    /// @param fillRef         DCA execution timestamp. Ignored for ORDER_FILL.
     function executeCommitment(
         bytes32 commitmentHash,
         bytes32 nullifier,
-        bytes calldata proof
+        bytes calldata proof,
+        uint64 fillRef
     ) external nonReentrant whenNotPaused {
         uint256 gasStart = gasleft();
         CommitmentRecord storage c = commitments[commitmentHash];
@@ -281,7 +272,7 @@ contract CommitmentRegistry is ReentrancyGuard {
 
         // ── Build public inputs and read fill-time reference value ─────────
         // Public input layout is identical for both circuits:
-        //   [0] commitment_hash  [1] fill_ref (oracle price or block.timestamp)
+        //   [0] commitment_hash  [1] fill_ref (oracle price or DCA execution timestamp)
         //   [2] nullifier        [3] token_in   [4] token_out
         //   [5] size             [6] min_out     [7] expiry
         bytes32[] memory publicInputs = new bytes32[](8);
@@ -293,12 +284,15 @@ contract CommitmentRegistry is ReentrancyGuard {
         publicInputs[6] = bytes32(c.minOut);
         publicInputs[7] = bytes32(uint256(c.expiry));
 
-        uint64 fillRef;
         if (c.kind == CommitmentKind.ORDER_FILL) {
+            require(fillRef == 0, "Registry: non-zero fillRef for ORDER_FILL");
             fillRef = _readOraclePrice(c.tokenIn, c.tokenOut);
         } else {
-            // DCA: fill-time reference is the current block timestamp.
-            fillRef = uint64(block.timestamp);
+            // DCA: exact block.timestamp is unknowable before mining. The
+            // proof binds to fillRef, and the registry checks the tx lands
+            // shortly after that proven timestamp.
+            require(fillRef <= block.timestamp, "Registry: DCA fillRef in future");
+            require(block.timestamp - fillRef <= DCA_FILL_REF_MAX_AGE, "Registry: DCA fillRef stale");
         }
         publicInputs[1] = bytes32(uint256(fillRef));
 
@@ -319,14 +313,10 @@ contract CommitmentRegistry is ReentrancyGuard {
             c.owner
         );
 
-        // ── Circuit breaker volume tracking ───────────────────────────────
-        _trackVolume(c.tokenIn, c.size);
-
         // ── Gas-tank debit ────────────────────────────────────────────────
         // Reimburse the keeper from the owner's prepaid ETH balance with a
         // flat KEEPER_PREMIUM_BPS premium. Skipped on self-execute (refunding
-        // to oneself just burns gas) and when gasVault isn't wired (back-compat
-        // for tests/early deploys). Extracted to a helper to keep
+        // to oneself just burns gas). Extracted to a helper to keep
         // executeCommitment under Solidity's stack-depth limit.
         _debitGas(c.owner, gasStart, commitmentHash);
 
@@ -444,24 +434,21 @@ contract CommitmentRegistry is ReentrancyGuard {
         dexAdapter = IDEXAdapter(newAdapter);
     }
 
-    /// @notice Wire (or rewire) the gas tank. Passing the zero address disables
-    ///         the debit path — useful for test fixtures and emergency disable.
     function setGasVault(address newVault) external onlyGuardian {
+        require(newVault != address(0), "Registry: zero vault");
         emit GasVaultChanged(address(gasVault), newVault);
         gasVault = GasVault(payable(newVault));
+    }
+
+    function setCollateralVault(address newVault) external onlyGuardian {
+        require(newVault != address(0), "Registry: zero vault");
+        emit CollateralVaultChanged(address(vault), newVault);
+        vault = CollateralVault(payable(newVault));
     }
 
     function setGuardian(address newGuardian) external onlyGuardian {
         require(newGuardian != address(0), "Registry: zero guardian");
         guardian = newGuardian;
-    }
-
-    /// @notice Calibrate the per-token baseline after the protocol has been live for a while.
-    ///         Each tokenIn has its own baseline because volume cannot be summed across
-    ///         tokens with different decimals / denominations.
-    function setVolumeBaseline(address tokenIn, uint256 baseline) external onlyGuardian {
-        require(tokenIn != address(0), "Registry: zero tokenIn");
-        volumeBaseline[tokenIn] = baseline;
     }
 
     /// @notice Configure the Chainlink-compatible USD price feed for a token.
@@ -496,26 +483,8 @@ contract CommitmentRegistry is ReentrancyGuard {
     /// @dev Compute reimbursement cost and forward it to the keeper EOA.
     ///      No-op when the gas tank is disabled or when the owner self-executed.
     function _debitGas(address owner_, uint256 gasStart, bytes32 commitmentHash) internal {
-        if (address(gasVault) == address(0) || msg.sender == owner_) return;
-        uint256 cost = ((gasStart - gasleft() + GAS_OVERHEAD) * tx.gasprice * KEEPER_PREMIUM_BPS) / 10000;
+        if (msg.sender == owner_) return;
+        uint256 cost = ((gasStart - gasleft()) * tx.gasprice * KEEPER_PREMIUM_BPS) / 10000;
         gasVault.debit(owner_, payable(msg.sender), cost, commitmentHash);
-    }
-
-    /// @dev Track rolling 1-hour volume per tokenIn and auto-pause on >10× baseline spike.
-    function _trackVolume(address tokenIn, uint256 amount) internal {
-        if (block.timestamp >= currentHourStart[tokenIn] + HOUR) {
-            currentHourVolume[tokenIn] = 0;
-            currentHourStart[tokenIn]  = block.timestamp;
-        }
-        currentHourVolume[tokenIn] += amount;
-
-        uint256 baseline = volumeBaseline[tokenIn];
-        if (
-            baseline > 0 &&
-            currentHourVolume[tokenIn] > baseline * CIRCUIT_BREAKER_MULTIPLIER
-        ) {
-            paused = true;
-            emit Paused(address(this));
-        }
     }
 }
