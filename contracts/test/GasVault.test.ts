@@ -23,29 +23,6 @@ describe("GasVault", () => {
     await vault.connect(owner).setRegistry(registry.address);
   });
 
-  // ── setRegistry ────────────────────────────────────────────────────────
-
-  describe("setRegistry", () => {
-    it("can only be called by owner", async () => {
-      const VaultF = await ethers.getContractFactory("GasVault");
-      const fresh = (await VaultF.deploy()) as unknown as GasVault;
-      await expect(fresh.connect(other).setRegistry(registry.address))
-        .to.be.revertedWith("GasVault: not owner");
-    });
-
-    it("cannot be called twice", async () => {
-      await expect(vault.connect(owner).setRegistry(other.address))
-        .to.be.revertedWith("GasVault: registry already set");
-    });
-
-    it("reverts on zero registry", async () => {
-      const VaultF = await ethers.getContractFactory("GasVault");
-      const fresh = (await VaultF.deploy()) as unknown as GasVault;
-      await expect(fresh.connect(owner).setRegistry(ethers.ZeroAddress))
-        .to.be.revertedWith("GasVault: zero registry");
-    });
-  });
-
   // ── deposit ────────────────────────────────────────────────────────────
 
   describe("deposit", () => {

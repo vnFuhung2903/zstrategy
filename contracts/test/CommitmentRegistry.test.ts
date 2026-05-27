@@ -25,6 +25,7 @@ describe("CommitmentRegistry", () => {
   let feedIn:  MockChainlinkAggregator;   // tokenIn (USDC) / USD
   let feedOut: MockChainlinkAggregator;   // tokenOut (WETH) / USD
   let vault: CollateralVault;
+  let gasVault: GasVault;
   let registry: CommitmentRegistry;
 
   const SIZE    = ethers.parseUnits("100", 6);   // 100 USDC
@@ -41,6 +42,8 @@ describe("CommitmentRegistry", () => {
   const DERIVED_PRICE   = 34482n;
   const ORDER_FILL  = 0;                         // CommitmentKind.ORDER_FILL
   const DCA         = 1;                         // CommitmentKind.DCA
+  const GAS_DEPOSIT = ethers.parseEther("0.05");
+  const TX_GAS_PRICE = ethers.parseUnits("1", "gwei");
 
   let commitmentHash: string;
   let nullifier: string;
@@ -70,16 +73,21 @@ describe("CommitmentRegistry", () => {
     const VaultF = await ethers.getContractFactory("CollateralVault");
     vault = (await VaultF.deploy()) as unknown as CollateralVault;
 
+    const GasVaultF = await ethers.getContractFactory("GasVault");
+    gasVault = (await GasVaultF.deploy()) as unknown as GasVault;
+
     const RegistryF = await ethers.getContractFactory("CommitmentRegistry");
     registry = (await RegistryF.deploy(
-      await verifier.getAddress(),
+      await gasVault.getAddress(),
       await vault.getAddress(),
       await dexAdapter.getAddress(),
       guardian.address
     )) as unknown as CommitmentRegistry;
 
     await vault.connect(guardian).setRegistry(await registry.getAddress());
+    await gasVault.connect(guardian).setRegistry(await registry.getAddress());
 
+    await registry.connect(guardian).setVerifier(ORDER_FILL, await verifier.getAddress());
     await registry.connect(guardian).setPriceFeed(await tokenIn.getAddress(),  await feedIn.getAddress());
     await registry.connect(guardian).setPriceFeed(await tokenOut.getAddress(), await feedOut.getAddress());
 
@@ -89,6 +97,7 @@ describe("CommitmentRegistry", () => {
     // Mint tokenIn for user and approve vault
     await tokenIn.mint(user.address, SIZE * 100n);
     await tokenIn.connect(user).approve(await vault.getAddress(), SIZE * 100n);
+    await gasVault.connect(user).deposit({ value: GAS_DEPOSIT });
 
     expiry = (await time.latest()) + 86400;
     commitmentHash = ethers.keccak256(ethers.toUtf8Bytes("commitment-1"));
@@ -546,25 +555,10 @@ describe("CommitmentRegistry", () => {
 
   // ── executeCommitment with gas tank wired ──────────────────────────────
   //
-  // Existing executeCommitment tests above run with `gasVault == 0`, exercising
-  // the back-compat short-circuit in _debitGas. This block wires up GasVault
-  // and exercises the full reimbursement path.
+  // All keeper executions use the wired GasVault reimbursement path.
 
   describe("executeCommitment (gas tank wired)", () => {
-    let gasVault: GasVault;
-    const GAS_DEPOSIT = ethers.parseEther("0.05");
-    // 1 gwei makes the cost calculation non-zero and predictable. Hardhat's
-    // EIP-1559 defaults already give a basefee, but pinning is clearer.
-    const TX_GAS_PRICE = ethers.parseUnits("1", "gwei");
-
     beforeEach(async () => {
-      const GasVaultF = await ethers.getContractFactory("GasVault");
-      gasVault = (await GasVaultF.deploy()) as unknown as GasVault;
-      await gasVault.connect(guardian).setRegistry(await registry.getAddress());
-      await registry.connect(guardian).setGasVault(await gasVault.getAddress());
-
-      // Prepay user's gas tank, then register + seed dex with tokenIn
-      await gasVault.connect(user).deposit({ value: GAS_DEPOSIT });
       await registerOne();
       await tokenIn.mint(await dexAdapter.getAddress(), SIZE);
     });
@@ -609,26 +603,29 @@ describe("CommitmentRegistry", () => {
       ).to.be.revertedWith("GasVault: insufficient gas balance");
     });
 
-    it("guardian can set the gas vault (and disable via zero address)", async () => {
+    it("guardian can replace the gas vault", async () => {
+      const GasVaultF = await ethers.getContractFactory("GasVault");
+      const newGasVault = (await GasVaultF.deploy()) as unknown as GasVault;
+      await newGasVault.connect(guardian).setRegistry(await registry.getAddress());
+
+      await expect(
+        registry.connect(guardian).setGasVault(await newGasVault.getAddress())
+      ).to.emit(registry, "GasVaultChanged");
+      expect(await registry.gasVault()).to.equal(await newGasVault.getAddress());
+    });
+
+    it("guardian cannot set a zero gas vault", async () => {
       await expect(
         registry.connect(guardian).setGasVault(ethers.ZeroAddress)
-      ).to.emit(registry, "GasVaultChanged");
-      expect(await registry.gasVault()).to.equal(ethers.ZeroAddress);
-
-      // With gas vault disabled, execution succeeds and does not touch the (drained) tank
-      const before = await gasVault.balanceOf(user.address);
-      await registry.connect(keeper).executeCommitment(
-        commitmentHash, nullifier, PROOF, 0, { gasPrice: TX_GAS_PRICE }
-      );
-      const after = await gasVault.balanceOf(user.address);
-      expect(after).to.equal(before);
+      ).to.be.revertedWith("Registry: zero vault");
     });
 
     it("non-guardian cannot set the gas vault", async () => {
+      const GasVaultF = await ethers.getContractFactory("GasVault");
+      const newGasVault = (await GasVaultF.deploy()) as unknown as GasVault;
       await expect(
-        registry.connect(other).setGasVault(ethers.ZeroAddress)
+        registry.connect(other).setGasVault(await newGasVault.getAddress())
       ).to.be.revertedWith("Registry: caller not guardian");
     });
   });
 });
-
