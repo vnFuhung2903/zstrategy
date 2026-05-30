@@ -133,7 +133,7 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card className="lg:col-span-2">
             <CardHeader>
-              <CardTitle>Strategy Mix</CardTitle>
+              <CardTitle>Intent Mix</CardTitle>
               <CardDescription>Public commitment classes indexed by the backend</CardDescription>
             </CardHeader>
             <CardContent>

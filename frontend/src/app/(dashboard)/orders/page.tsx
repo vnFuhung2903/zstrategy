@@ -19,17 +19,16 @@ import { useRegisterCommitment } from "@/hooks/useRegistry";
 import {
   commitmentHash as computeCommitment,
   nullifierHash as computeNullifier,
-  deriveStrategyId,
+  deriveIntentId,
   deriveUserSecret,
   randomBytes32,
-  strategyIdSigningMessage,
+  intentIdSigningMessage,
 } from "@/lib/commitment";
-import { saveStrategy, type StrategyKind } from "@/lib/strategyStore";
+import { saveIntent, type IntentKind } from "@/lib/intentStore";
 import { splitAndEncryptSecret } from "@/lib/threshold";
 import { keeperApi } from "@/lib/keeperApi";
-import { backendApi, type PostStrategyBody } from "@/lib/backendApi";
+import { backendApi, type PostOrderIntentBody } from "@/lib/backendApi";
 import { ADDRESSES, COMMITMENT_REGISTRY_ABI, PRICE_FEED_ABI } from "@/lib/contracts";
-import { getTxUrl, explorerName } from "@/lib/explorerUrl";
 import { arbitrumSepolia } from "wagmi/chains";
 
 const TIME_IN_FORCE: Record<string, number> = {
@@ -69,12 +68,12 @@ const MARKET_EXPIRY_SECONDS = 10 * 60;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 
-export default function StrategyPage() {
+export default function OrdersPage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const publicClient = usePublicClient();
   const [pair,       setPair]       = useState<TradingPair>(DEFAULT_PAIR);
-  const [kind,       setKind]       = useState<StrategyKind>("LIMIT");
+  const [kind,       setKind]       = useState<IntentKind>("LIMIT");
   const [side,       setSide]       = useState<Side>("SELL");
   const [tif,        setTif]        = useState<keyof typeof TIME_IN_FORCE>("7D");
   const [amount,     setAmount]     = useState("");
@@ -96,16 +95,16 @@ export default function StrategyPage() {
   // Held until the on-chain registration confirms; only then do we POST to the
   // Go backend, so the chain is the source of truth before any off-chain row
   // is created (the indexer would otherwise race the POST).
-  const [pendingPost, setPendingPost] = useState<PostStrategyBody | null>(null);
+  const [pendingPost, setPendingPost] = useState<PostOrderIntentBody | null>(null);
   const [postSynced,  setPostSynced]  = useState(false);
-  const [marketExecutionHash, setMarketExecutionHash] = useState<`0x${string}` | null>(null);
-  const [marketExecutionPhase, setMarketExecutionPhase] = useState<"registering" | "executing" | "executed" | "error" | null>(null);
+  const [marketIntentHash, setMarketIntentHash] = useState<`0x${string}` | null>(null);
+  const [marketIntentPhase, setMarketIntentPhase] = useState<"registering" | "syncing" | "queued" | "error" | null>(null);
 
-  // Per-strategy nonce — generated once per page load. A fresh strategy gets a
-  // fresh nonce; we persist it (alongside metadata) only when the user clicks
+  // Per-intent nonce — generated once per page load. A fresh intent gets a
+  // fresh nonce; we persist it with metadata only when the user clicks
   // submit, so abandoned drafts don't pollute IndexedDB.
   const nonceRef = useRef<`0x${string}` | null>(null);
-  const marketExecutionToastRef = useRef<string | null>(null);
+  const marketIntentToastRef = useRef<string | null>(null);
   const backendSyncHashRef = useRef<string | null>(null);
 
   // Direction is just the user's side choice for both LIMIT and MARKET.
@@ -119,11 +118,10 @@ export default function StrategyPage() {
   const { data: gasBalance }     = useGasBalance();
   const { register, isPending, isConfirming, isSuccess, error } = useRegisterCommitment();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
-  const marketExecuted = marketExecutionPhase === "executed";
 
   // Keeper-gas precondition. We require ≥ 1 estimated fill in the tank before
-  // accepting a new strategy — otherwise the keeper trigger will revert on
-  // executeCommitment and the strategy will sit PENDING until the user funds.
+  // accepting a new intent — otherwise the keeper trigger will revert on
+  // executeCommitment and the intent will sit PENDING until the user funds.
   // (One commitment ⇒ one fill ⇒ one PER_EXECUTION_ETH_ESTIMATE.)
   // Treat the pre-query "undefined" state as a shortfall so a fast clicker
   // can't submit before the balance read resolves.
@@ -290,17 +288,17 @@ export default function StrategyPage() {
 
     try {
       const nonce = getDraftNonce();
-      const strategyId = deriveStrategyId(address, nonce);
+      const intentId = deriveIntentId(address, nonce);
 
       // 1. Fetch keeper public-key set BEFORE asking the user to sign — if the
       //    keeper network is unreachable we want to fail fast and not waste a
       //    wallet prompt.
       const { keepers } = await keeperApi.listKeepers();
 
-      // 2. Wallet signs strategyId — deterministic, recoverable secret bound
+      // 2. Wallet signs intentId — deterministic, recoverable secret bound
       //    to this wallet. Same prompt on cancel/self-execute regenerates it.
       const signature = await signMessageAsync({
-        message: strategyIdSigningMessage(strategyId),
+        message: intentIdSigningMessage(intentId),
       });
       const userSecret = deriveUserSecret(signature);
       const nullifier = computeNullifier(userSecret, nonce);
@@ -322,14 +320,14 @@ export default function StrategyPage() {
       //    requires k of N to cooperate at fill time.
       const encryptedShares = await splitAndEncryptSecret(userSecret, keepers);
 
-      // 4. Persist strategy metadata locally BEFORE any network/on-chain side
+      // 4. Persist intent metadata locally BEFORE any network/on-chain side
       //    effect. If subsequent steps fail, the user can recover from
       //    IndexedDB and retry. user_secret is NOT persisted — it's recoverable
-      //    from the wallet signature on strategyId.
-      await saveStrategy({
+      //    from the wallet signature on intentId.
+      await saveIntent({
         commitmentHash,
         owner:      address.toLowerCase() as `0x${string}`,
-        strategyId,
+        intentId,
         nonce,
         tokenIn:    tokenIn.address,
         tokenOut:   tokenOut.address,
@@ -346,14 +344,14 @@ export default function StrategyPage() {
       //    tx confirms (see the useEffect below). Posting earlier races the
       //    keeper's on-chain status check and yields a 422.
       //
-      // Backend stores user-facing strategy kind. On-chain and on the keeper
+      // Backend stores user-facing intent kind. On-chain and on the keeper
       // wire, LIMIT and MARKET both use kind=0 (ORDER_FILL); MARKET uses a
       // sentinel price that makes the fill check pass.
       const isMarketOrder = kind === "MARKET";
       setPostSynced(false);
-      setMarketExecutionHash(isMarketOrder ? commitmentHash : null);
-      setMarketExecutionPhase(isMarketOrder ? "registering" : null);
-      marketExecutionToastRef.current = null;
+      setMarketIntentHash(isMarketOrder ? commitmentHash : null);
+      setMarketIntentPhase(isMarketOrder ? "registering" : null);
+      marketIntentToastRef.current = null;
       backendSyncHashRef.current = null;
       setPendingPost({
         commitmentHash,
@@ -398,30 +396,19 @@ export default function StrategyPage() {
     backendSyncHashRef.current = pendingPost.commitmentHash;
 
     let cancelled = false;
-    const sync =
-      pendingPost.kind === "MARKET"
-        ? backendApi.postStrategyAndWait(pendingPost)
-        : backendApi.postStrategy(pendingPost);
+    if (pendingPost.kind === "MARKET") setMarketIntentPhase("syncing");
 
-    sync
-      .then((result) => {
+    backendApi.postOrderIntent(pendingPost)
+      .then(() => {
         if (!cancelled) {
           setPostSynced(true);
           if (pendingPost.kind === "MARKET") {
-            setMarketExecutionPhase("executed");
-            const txHash = "txHash" in result && typeof result.txHash === "string"
-              ? result.txHash as `0x${string}`
-              : undefined;
-            const url = txHash ? getTxUrl(chainId, txHash) : null;
-
-            if (marketExecutionToastRef.current !== pendingPost.commitmentHash) {
-              marketExecutionToastRef.current = pendingPost.commitmentHash;
-              toast.success("Market order executed", {
-                description: txHash ? `Tx ${txHash.slice(0, 10)}...${txHash.slice(-6)}` : "executeCommitment completed",
+            setMarketIntentPhase("queued");
+            if (marketIntentToastRef.current !== pendingPost.commitmentHash) {
+              marketIntentToastRef.current = pendingPost.commitmentHash;
+              toast.success("Market intent queued", {
+                description: "Execution is async. Watch Activity for the on-chain fill.",
                 duration: 8000,
-                action: url
-                  ? { label: `View on ${explorerName(chainId)}`, onClick: () => window.open(url, "_blank", "noopener,noreferrer") }
-                  : undefined,
               });
             }
           }
@@ -431,22 +418,22 @@ export default function StrategyPage() {
         if (!cancelled) {
           const msg = err instanceof Error ? err.message : String(err);
           setSubmitError(msg);
-          if (pendingPost.kind === "MARKET") setMarketExecutionPhase("error");
-          console.warn("[strategy] backend post failed (will need retry):", err);
+          if (pendingPost.kind === "MARKET") setMarketIntentPhase("error");
+          console.warn("[intent] backend post failed (will need retry):", err);
         }
       });
     return () => { cancelled = true; };
-  }, [isSuccess, pendingPost, postSynced, chainId]);
+  }, [isSuccess, pendingPost, postSynced]);
 
-  const effectiveMarketExecutionPhase =
-    marketExecutionPhase === "registering" && isSuccess ? "executing" : marketExecutionPhase;
-  const waitingForMarketExecution = Boolean(
-    marketExecutionHash
-      && effectiveMarketExecutionPhase !== "executed"
-      && effectiveMarketExecutionPhase !== "error"
-      && (isSuccess || effectiveMarketExecutionPhase === "executing"),
+  const effectiveMarketIntentPhase =
+    marketIntentPhase === "registering" && isSuccess ? "syncing" : marketIntentPhase;
+  const waitingForMarketSync = Boolean(
+    marketIntentHash
+      && effectiveMarketIntentPhase !== "queued"
+      && effectiveMarketIntentPhase !== "error"
+      && (isSuccess || effectiveMarketIntentPhase === "syncing"),
   );
-  const busy = isPending || isConfirming || isSigning || waitingForMarketExecution;
+  const busy = isPending || isConfirming || isSigning || waitingForMarketSync;
   const errorMessage = submitError ?? (error ? (error as Error).message : null);
 
   return (
@@ -680,23 +667,23 @@ export default function StrategyPage() {
                   Success is announced via the global toast (Sonner) from the
                   useRegisterCommitment hook's useTxToast wiring, so we don't
                   also need to swap icons/text here. */}
-              {marketExecutionHash && (
+              {marketIntentHash && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-primary-container">
-                  {marketExecuted
+                  {effectiveMarketIntentPhase === "queued"
                     ? <CheckCircle2 size={13} />
-                    : effectiveMarketExecutionPhase === "error"
+                    : effectiveMarketIntentPhase === "error"
                       ? <AlertCircle size={13} />
                       : <Loader2 size={13} className="animate-spin" />
                   }
-                  {marketExecuted
-                    ? "Market order executed on-chain."
-                    : effectiveMarketExecutionPhase === "error"
-                      ? "Market execution failed. See error above."
-                    : effectiveMarketExecutionPhase === "executing"
-                      ? "Backend accepted keeper trigger. Waiting for commitment execution..."
+                  {effectiveMarketIntentPhase === "queued"
+                    ? "Market intent queued. Execution continues asynchronously."
+                    : effectiveMarketIntentPhase === "error"
+                      ? "Market intent sync failed. See error above."
+                      : effectiveMarketIntentPhase === "syncing"
+                      ? "Registration confirmed. Syncing encrypted witness shares..."
                       : isSuccess
-                        ? "Registration confirmed. Syncing keeper payload..."
-                        : "Registering market commitment..."
+                        ? "Registration confirmed. Syncing intent payload..."
+                        : "Registering market intent commitment..."
                   }
                 </div>
               )}
@@ -728,7 +715,7 @@ export default function StrategyPage() {
                   onClick={handleSubmit}
                 >
                   {busy
-                    ? <><Loader2 size={14} className="animate-spin" />{waitingForMarketExecution ? "Executing..." : isSigning ? "Signing…" : isConfirming ? "Confirming…" : "Submitting…"}</>
+                    ? <><Loader2 size={14} className="animate-spin" />{waitingForMarketSync ? "Syncing..." : isSigning ? "Signing…" : isConfirming ? "Confirming…" : "Submitting…"}</>
                     : gasShortfall
                       ? <><Lock size={14} />Top up gas tank</>
                       : <><Lock size={14} />Sign &amp; Submit Commitment</>

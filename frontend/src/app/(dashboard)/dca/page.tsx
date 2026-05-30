@@ -17,15 +17,15 @@ import { useGasBalance, PER_EXECUTION_ETH_ESTIMATE } from "@/hooks/useGasVault";
 import { useRegisterCommitmentBatch } from "@/hooks/useRegistry";
 import { dcaCommitmentHash, dcaNullifierHash, type DcaPreimageFields } from "@/lib/dcaCommitment";
 import {
-  deriveStrategyId,
+  deriveIntentId,
   deriveUserSecret,
   randomBytes32,
-  strategyIdSigningMessage,
+  intentIdSigningMessage,
 } from "@/lib/commitment";
-import { saveDcaRounds, type DcaRoundRecord } from "@/lib/strategyStore";
+import { saveDcaRounds, type DcaRoundRecord } from "@/lib/intentStore";
 import { splitAndEncryptSecret } from "@/lib/threshold";
 import { keeperApi } from "@/lib/keeperApi";
-import { backendApi, type PostDcaGroupBody } from "@/lib/backendApi";
+import { backendApi, type PostDcaIntentBody } from "@/lib/backendApi";
 
 // BUY:  spend quoteToken each round → accumulate baseToken  (classic DCA)
 // SELL: spend baseToken each round  → accumulate quoteToken (reverse DCA / de-risking)
@@ -61,7 +61,7 @@ export default function DcaPage() {
   const [roundCountInput, setRoundCountInput] = useState("2");
   const [intervalKey, setIntervalKey] = useState<keyof typeof INTERVALS>("24H");
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [pendingPost, setPendingPost] = useState<PostDcaGroupBody | null>(null);
+  const [pendingPost, setPendingPost] = useState<PostDcaIntentBody | null>(null);
   const [postSynced,  setPostSynced]  = useState(false);
 
   const tokenIn  = side === "BUY" ? pair.quoteToken : pair.baseToken;
@@ -120,11 +120,11 @@ export default function DcaPage() {
 
     try {
       const sharedNonce = getSharedNonce();
-      const strategyId  = deriveStrategyId(address, sharedNonce);
+      const intentId    = deriveIntentId(address, sharedNonce);
 
       const { keepers } = await keeperApi.listKeepers();
 
-      const signature  = await signMessageAsync({ message: strategyIdSigningMessage(strategyId) });
+      const signature  = await signMessageAsync({ message: intentIdSigningMessage(intentId) });
       const userSecret = deriveUserSecret(signature);
 
       const currentNow = Math.floor(Date.now() / 1000);
@@ -151,13 +151,13 @@ export default function DcaPage() {
       }
 
       const encryptedShares = await splitAndEncryptSecret(userSecret, keepers);
-      const dcaGroupId      = strategyId;
+      const dcaGroupId      = intentId;
 
       const records: DcaRoundRecord[] = hashes.map((commitmentHash, i) => ({
         commitmentHash,
         dcaGroupId,
         owner:       address.toLowerCase() as `0x${string}`,
-        strategyId,
+        intentId,
         nonce:       roundNonces[i],
         nullifier:   nullifiers[i],
         tokenIn:     tokenIn.address,
@@ -209,7 +209,7 @@ export default function DcaPage() {
   useEffect(() => {
     if (!isSuccess || !pendingPost || postSynced) return;
     let cancelled = false;
-    backendApi.postDcaGroup(pendingPost)
+    backendApi.postDcaIntent(pendingPost)
       .then(() => { if (!cancelled) setPostSynced(true); })
       .catch(err => { if (!cancelled) console.warn("[dca] backend post failed (retry later):", err); });
     return () => { cancelled = true; };

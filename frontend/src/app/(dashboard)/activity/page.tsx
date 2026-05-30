@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { useExecutions } from "@/hooks/useBackendApi";
-import { type StrategyKind, type ExecutionStatus } from "@/lib/api";
+import { type IntentKind, type ExecutionStatus } from "@/lib/api";
 import { formatDistanceToNow } from "@/lib/timeUtils";
 
 const PAGE_SIZE = 20;
@@ -22,7 +22,7 @@ const STATUS_OPTIONS: Array<{ value: ExecutionStatus | ""; label: string }> = [
   { value: "expired", label: "Expired" },
 ];
 
-const KIND_OPTIONS: Array<{ value: StrategyKind | ""; label: string }> = [
+const KIND_OPTIONS: Array<{ value: IntentKind | ""; label: string }> = [
   { value: "", label: "All kinds" },
   { value: "LIMIT", label: "Limit" },
   { value: "MARKET", label: "Market" },
@@ -33,7 +33,7 @@ const CHAIN_OPTIONS = [
   { value: 421614, label: "Arb Sepolia" },
 ] as const;
 
-function kindLabel(kind: StrategyKind) {
+function kindLabel(kind: IntentKind) {
   if (kind === "LIMIT") return "Limit";
   if (kind === "MARKET") return "Market";
   return "DCA";
@@ -43,7 +43,7 @@ export default function ActivityPage() {
   const [offset, setOffset] = useState(0);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<ExecutionStatus | "">("");
-  const [kind, setKind] = useState<StrategyKind | "">("");
+  const [kind, setKind] = useState<IntentKind | "">("");
   const [chainId, setChainId] = useState<number>(CHAIN_OPTIONS[0].value);
 
   const { data: execData, isLoading, isError } = useExecutions(PAGE_SIZE, offset, {
@@ -108,7 +108,7 @@ export default function ActivityPage() {
               <select
                 value={kind}
                 onChange={(e) => {
-                  setKind(e.target.value as StrategyKind | "");
+                  setKind(e.target.value as IntentKind | "");
                   setOffset(0);
                 }}
                 className="w-full bg-surface-container-lowest text-on-surface text-sm px-3 py-2.5 rounded-sm border-b border-outline-variant/30 outline-none focus:border-primary-container"

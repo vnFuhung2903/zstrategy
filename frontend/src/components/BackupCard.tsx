@@ -5,7 +5,7 @@ import { useAccount } from "wagmi";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Download, Upload, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
-import { exportStrategies, importStrategies } from "@/lib/backup";
+import { exportIntents, importIntents } from "@/lib/backup";
 
 export function BackupCard() {
   const { address, isConnected } = useAccount();
@@ -29,8 +29,8 @@ export function BackupCard() {
 
     setBusy("export");
     try {
-      const { count, filename } = await exportStrategies(address.toLowerCase() as `0x${string}`, password);
-      flash("ok", `Exported ${count} orders → ${filename}`);
+      const { count, filename } = await exportIntents(address.toLowerCase() as `0x${string}`, password);
+      flash("ok", `Exported ${count} intents -> ${filename}`);
     } catch (e) {
       flash("err", e instanceof Error ? e.message : String(e));
     } finally {
@@ -53,12 +53,12 @@ export function BackupCard() {
     setBusy("import");
     try {
       const text = await file.text();
-      const { count, owner } = await importStrategies(text, password);
+      const { count, owner } = await importIntents(text, password);
       const ownerWarning =
         address && owner.toLowerCase() !== address.toLowerCase()
           ? " (note: backup belongs to a different wallet)"
           : "";
-      flash("ok", `Imported ${count} orders${ownerWarning}`);
+      flash("ok", `Imported ${count} intents${ownerWarning}`);
     } catch (e) {
       flash("err", e instanceof Error ? e.message : String(e));
     } finally {
@@ -69,11 +69,11 @@ export function BackupCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Order Backup</CardTitle>
+        <CardTitle>Intent Backup</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-xs text-on-surface-variant">
-          Your order parameters are stored locally. Export an encrypted backup to restore
+          Your intent witness data is stored locally. Export an encrypted backup to restore
           on another device. The backup is AES-GCM encrypted with a password you choose
           (PBKDF2-SHA256, 250 000 iterations).
         </p>

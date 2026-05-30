@@ -14,7 +14,7 @@ type Mode = "deposit" | "withdraw";
 
 /**
  * Prepaid ETH balance the registry debits at executeCommitment time. Funds
- * are pooled per user (one deposit covers any number of strategies). Refill
+ * are pooled per user (one deposit covers any number of intents). Refill
  * any time; withdraw unused balance any time.
  */
 export function GasTankPanel() {
@@ -34,7 +34,7 @@ export function GasTankPanel() {
   const busy = depositPending || depositConfirming || withdrawPending || withdrawConfirming;
 
   // wagmi caches `useReadContract` results by (address, abi, functionName, args),
-  // so any component using `useGasBalance()` (this panel, the strategy page, the
+  // so any component using `useGasBalance()` (this panel, the order page, the
   // DCA page) shares state. Refetch on confirmation so the disabled "Top up gas
   // tank" buttons on the form pages unstick as soon as the deposit lands — no
   // 10s polling lag.
