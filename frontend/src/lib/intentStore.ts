@@ -1,23 +1,23 @@
 /**
- * IndexedDB-backed store for strategy metadata.
+ * IndexedDB-backed store for local intent metadata.
  *
- * Strategy parameters never go on-chain — only the commitment hash does. This
+ * Intent witness data never goes on-chain — only the commitment hash does. This
  * store keeps the metadata that the user (and only the user) needs to:
- *   - re-derive `user_secret` from a wallet signature on `strategyId`
+ *   - re-derive `user_secret` from a wallet signature on `intentId`
  *   - re-compute the nullifier for cancel/self-execute
  *   - re-generate the ZK proof at fill time
  *
  * `userSecret` is intentionally NOT stored. It is derived deterministically
- * from `keccak256(sign(wallet, strategyId))`, so the wallet itself is the only
+ * from `keccak256(sign(wallet, intentId))`, so the wallet itself is the only
  * persistent secret material.
  */
 
 const DB_NAME = "zstrategy";
-const DB_VERSION = 1;
-const STORE = "strategies";
+const DB_VERSION = 2;
+const STORE = "intents";
 const DCA_STORE = "dca_rounds";
 
-export type StrategyDirection = 0 | 1; // 0 = BUY, 1 = SELL
+export type IntentDirection = 0 | 1; // 0 = BUY, 1 = SELL
 
 /**
  * Frontend-only discriminator for display and form UX.
@@ -29,15 +29,15 @@ export type StrategyDirection = 0 | 1; // 0 = BUY, 1 = SELL
  *           so the circuit's fill check trivially passes. Backend skips polling
  *           and triggers the keeper on the first monitor tick.
  */
-export type StrategyKind = "LIMIT" | "MARKET";
+export type IntentKind = "LIMIT" | "MARKET";
 
-export interface StrategyRecord {
+export interface IntentRecord {
   /** Primary key — keccak256(preimage). */
   commitmentHash: `0x${string}`;
-  /** Wallet that owns this strategy (lowercased EIP-55 address as 0x string). */
+  /** Wallet that owns this intent (lowercased EIP-55 address as 0x string). */
   owner: `0x${string}`;
-  /** Per-strategy id signed by the wallet to derive `user_secret`. */
-  strategyId: `0x${string}`;
+  /** Per-intent id signed by the wallet to derive `user_secret`. */
+  intentId: `0x${string}`;
   /** Random 32-byte nonce, included in the preimage. */
   nonce: `0x${string}`;
   /** On-chain registration fields (kept here for offline display + proof gen). */
@@ -48,9 +48,9 @@ export interface StrategyRecord {
   expiry: number;
   /** Private fields — these are the ones that justify the privacy story. */
   price: string; // bigint stringified, in oracle decimals (e.g. 8 for Chainlink ETH/USD)
-  direction: StrategyDirection;
+  direction: IntentDirection;
   /** UI discriminator — frontend-only, not in the circuit or contract. */
-  kind: StrategyKind;
+  kind: IntentKind;
   /** Local lifecycle. */
   createdAt: number;
 }
@@ -75,7 +75,7 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveStrategy(record: StrategyRecord): Promise<void> {
+export async function saveIntent(record: IntentRecord): Promise<void> {
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
@@ -86,16 +86,16 @@ export async function saveStrategy(record: StrategyRecord): Promise<void> {
   db.close();
 }
 
-export async function listStrategiesForOwner(owner: `0x${string}`): Promise<StrategyRecord[]> {
+export async function listIntentsForOwner(owner: `0x${string}`): Promise<IntentRecord[]> {
   const db = await openDb();
   const ownerKey = owner.toLowerCase() as `0x${string}`;
-  const result = await new Promise<StrategyRecord[]>((resolve, reject) => {
+  const result = await new Promise<IntentRecord[]>((resolve, reject) => {
     const req = db
       .transaction(STORE, "readonly")
       .objectStore(STORE)
       .index("owner")
       .getAll(ownerKey);
-    req.onsuccess = () => resolve((req.result as StrategyRecord[]) ?? []);
+    req.onsuccess = () => resolve((req.result as IntentRecord[]) ?? []);
     req.onerror = () => reject(req.error);
   });
   db.close();
@@ -107,11 +107,11 @@ export async function listStrategiesForOwner(owner: `0x${string}`): Promise<Stra
 export interface DcaRoundRecord {
   /** Primary key — dcaCommitmentHash for this round. */
   commitmentHash: `0x${string}`;
-  /** Groups all rounds belonging to the same DCA strategy. Equal to strategyId. */
+  /** Groups all rounds belonging to the same DCA intent. Equal to intentId. */
   dcaGroupId: `0x${string}`;
   owner: `0x${string}`;
   /** Shared across all rounds in the group; the message signed by the wallet. */
-  strategyId: `0x${string}`;
+  intentId: `0x${string}`;
   /** Per-round random nonce, included in the preimage. */
   nonce: `0x${string}`;
   nullifier: `0x${string}`;

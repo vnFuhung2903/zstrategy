@@ -1,21 +1,21 @@
 /**
  * Go backend API client.
  *
- * Strategies are registered here (not directly to the keeper). The backend
- * persists strategy metadata, forwards encrypted shares to the keeper, and
+ * Intents are registered here (not directly to the keeper). The backend
+ * persists pending intent metadata, forwards encrypted shares to the keeper, and
  * manages per-commitment monitoring goroutines.
  */
 
 const BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8080";
 
-export interface PostStrategyBody {
+export interface PostOrderIntentBody {
   commitmentHash: `0x${string}`;
   /**
-   * User-facing strategy kind. On-chain, LIMIT and MARKET are both registered
+   * User-facing intent kind. On-chain, LIMIT and MARKET are both registered
    * as kind=0 (ORDER_FILL); the backend translates them to the keeper wire
-   * kind when execution is triggered. DCA is its own circuit.
+   * kind when execution is triggered.
    */
-  kind: "LIMIT" | "MARKET" | "DCA";
+  kind: "LIMIT" | "MARKET";
   chainId: number;
   tokenIn: `0x${string}`;
   tokenOut: `0x${string}`;
@@ -33,12 +33,10 @@ export interface PostStrategyBody {
   nonce: `0x${string}`;
   /** keccak256(user_secret || nonce), 32-byte hex. */
   nullifier: `0x${string}`;
-  scheduledLo?: number;
-  scheduledHi?: number;
   encryptedShares: Array<{ keeperId: string; ciphertext: string }>;
 }
 
-export interface PostDcaGroupBody {
+export interface PostDcaIntentBody {
   chainId: number;
   tokenIn: `0x${string}`;
   tokenOut: `0x${string}`;
@@ -56,15 +54,6 @@ export interface PostDcaGroupBody {
   }>;
 }
 
-export interface ExecutedStrategyResponse {
-  status: "executed";
-  commitmentHash: `0x${string}`;
-  txHash: `0x${string}`;
-  blockNumber: number;
-  gasUsed: number;
-  executedAt: string | null;
-}
-
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BACKEND_BASE}${path}`, {
     method: "POST",
@@ -80,7 +69,6 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const backendApi = {
-  postStrategy:        (body: PostStrategyBody) => postJson<{ status: string; commitmentHash: string }>("/api/v1/strategies", body),
-  postStrategyAndWait: (body: PostStrategyBody) => postJson<ExecutedStrategyResponse>("/api/v1/strategies/execute-sync", body),
-  postDcaGroup:        (body: PostDcaGroupBody) => postJson<{ status: string; saved: number }>("/api/v1/dca-strategies", body),
+  postOrderIntent: (body: PostOrderIntentBody) => postJson<{ status: string; commitmentHash: string }>("/api/v1/intents/order", body),
+  postDcaIntent:   (body: PostDcaIntentBody) => postJson<{ status: string; saved: number }>("/api/v1/intents/dca", body),
 };

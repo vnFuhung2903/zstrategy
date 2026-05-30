@@ -1,7 +1,7 @@
 /**
- * Encrypted strategy backup (`.zstrategy` file format).
+ * Encrypted intent backup (`.zstrategy` file format).
  *
- * Strategy parameters live in IndexedDB only — clear the browser and they're
+ * Intent witness data lives in IndexedDB only — clear the browser and it's
  * gone. This lets the user export an AES-GCM encrypted bundle protected by a
  * password they choose, and restore it on another device.
  *
@@ -12,10 +12,10 @@
  */
 
 import {
-  listStrategiesForOwner,
-  saveStrategy,
-  type StrategyRecord,
-} from "./strategyStore";
+  listIntentsForOwner,
+  saveIntent,
+  type IntentRecord,
+} from "./intentStore";
 
 const FORMAT_TAG = "zstrategy-backup";
 const FORMAT_VERSION = 1;
@@ -74,23 +74,23 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
 }
 
 /**
- * Read all strategies for `owner` from IndexedDB, encrypt with `password`,
+ * Read all intents for `owner` from IndexedDB, encrypt with `password`,
  * and trigger a browser download of the resulting `.zstrategy` file.
  */
-export async function exportStrategies(
+export async function exportIntents(
   owner: `0x${string}`,
   password: string,
 ): Promise<{ count: number; filename: string }> {
   if (password.length < 8) throw new Error("Password must be at least 8 characters");
 
-  const strategies = await listStrategiesForOwner(owner);
-  if (strategies.length === 0) throw new Error("No strategies to export");
+  const intents = await listIntentsForOwner(owner);
+  if (intents.length === 0) throw new Error("No intents to export");
 
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
   const iv   = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const key  = await deriveKey(password, salt);
 
-  const plaintext = new TextEncoder().encode(JSON.stringify(strategies));
+  const plaintext = new TextEncoder().encode(JSON.stringify(intents));
   const ciphertext = new Uint8Array(
     await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext),
   );
@@ -118,15 +118,15 @@ export async function exportStrategies(
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 
-  return { count: strategies.length, filename };
+  return { count: intents.length, filename };
 }
 
 /**
- * Decrypt a `.zstrategy` file with `password` and merge its strategies into
+ * Decrypt a `.zstrategy` file with `password` and merge its intents into
  * IndexedDB. Returns counts. Existing rows with the same `commitmentHash` are
  * overwritten — IndexedDB `put` semantics.
  */
-export async function importStrategies(
+export async function importIntents(
   fileText: string,
   password: string,
 ): Promise<{ count: number; owner: `0x${string}` }> {
@@ -156,11 +156,11 @@ export async function importStrategies(
   }
 
   const json = new TextDecoder().decode(plaintext);
-  const records = JSON.parse(json) as StrategyRecord[];
+  const records = JSON.parse(json) as IntentRecord[];
   if (!Array.isArray(records)) throw new Error("Backup payload is malformed");
 
   for (const r of records) {
-    await saveStrategy(r);
+    await saveIntent(r);
   }
   return { count: records.length, owner: parsed.owner };
 }

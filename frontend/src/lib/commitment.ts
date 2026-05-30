@@ -10,7 +10,7 @@
  */
 
 import { keccak256, encodePacked } from "viem";
-import type { StrategyDirection } from "./strategyStore";
+import type { IntentDirection } from "./intentStore";
 
 // BN254 scalar field modulus. The Noir `Field` type is this group, and both
 // noir_js (off-chain prover) and OrderFillVerifier.sol (on-chain) reject any
@@ -41,7 +41,7 @@ export interface PreimageFields {
   minOut: bigint;
   expiry: bigint; // uint64 — pass as bigint to viem
   price: bigint; // uint64
-  direction: StrategyDirection;
+  direction: IntentDirection;
   nonce: `0x${string}`; // bytes32
   userSecret: `0x${string}`; // bytes32
 }
@@ -59,12 +59,12 @@ export function nullifierHash(userSecret: `0x${string}`, nonce: `0x${string}`): 
   return reduceToField(keccak256(encodePacked(["bytes32", "bytes32"], [userSecret, nonce])));
 }
 
-/** strategyId = keccak256(owner || nonce). Public — used as the message the wallet signs. */
-export function deriveStrategyId(owner: `0x${string}`, nonce: `0x${string}`): `0x${string}` {
+/** intentId = keccak256(owner || nonce). Public — used as the message the wallet signs. */
+export function deriveIntentId(owner: `0x${string}`, nonce: `0x${string}`): `0x${string}` {
   return keccak256(encodePacked(["address", "bytes32"], [owner, nonce]));
 }
 
-/** user_secret = keccak256(signature) reduced mod P. Wallet signature on strategyId is deterministic. */
+/** user_secret = keccak256(signature) reduced mod P. Wallet signature on intentId is deterministic. */
 export function deriveUserSecret(signature: `0x${string}`): `0x${string}` {
   return reduceToField(keccak256(signature));
 }
@@ -81,6 +81,6 @@ export function randomBytes32(): `0x${string}` {
 }
 
 /** Build the human-readable string the wallet is asked to sign. */
-export function strategyIdSigningMessage(strategyId: `0x${string}`): string {
-  return `zstrategy: derive user_secret for strategyId=${strategyId}`;
+export function intentIdSigningMessage(intentId: `0x${string}`): string {
+  return `zstrategy: derive user_secret for intentId=${intentId}`;
 }

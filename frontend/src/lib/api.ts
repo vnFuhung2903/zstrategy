@@ -19,7 +19,7 @@ export interface Statistics {
 }
 
 export type ExecutionStatus = "registered" | "executed" | "cancelled" | "expired";
-export type StrategyKind = "LIMIT" | "MARKET" | "DCA";
+export type IntentKind = "LIMIT" | "MARKET" | "DCA";
 
 export interface ExecutionRecord {
   id:              number;
@@ -29,7 +29,7 @@ export interface ExecutionRecord {
   block_number:    number;
   gas_used:        number;
   status:          ExecutionStatus;
-  kind:            StrategyKind;
+  kind:            IntentKind;
   registered_at:   string;
   executed_at:     string | null;
 }
@@ -64,7 +64,7 @@ export const api = {
     chainId = DEFAULT_CHAIN_ID,
     limit = 20,
     offset = 0,
-    filters: { q?: string; status?: ExecutionStatus | ""; kind?: StrategyKind | "" } = {},
+    filters: { q?: string; status?: ExecutionStatus | ""; kind?: IntentKind | "" } = {},
   ):
       Promise<{ data: ExecutionRecord[]; limit: number; offset: number }> => {
     const params = new URLSearchParams({

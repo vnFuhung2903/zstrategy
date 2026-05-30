@@ -66,7 +66,7 @@ export function useWithdrawGas() {
   return { withdrawGas, hash, isPending, isConfirming, isSuccess, error };
 }
 
-// Per-execution cost estimate used to gate strategy submission in the UI.
+// Per-execution cost estimate used to gate intent submission in the UI.
 // The registry debits `GAS_ESTIMATE * tx.gasprice * 120%`.
 // Recent MARKET execution telemetry on Arbitrum Sepolia used 5,784,119 gas.
 // The exact billable amount would be 5,814,119 after adding the registry's

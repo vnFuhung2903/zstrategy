@@ -2,7 +2,7 @@
  * Keeper-network API client.
  *
  * The frontend only needs to fetch the keeper public-key set for ECIES
- * encryption of Shamir shares. Strategy registration is now sent to the
+ * encryption of Shamir shares. Intent registration is sent to the
  * Go backend (backendApi.ts), which forwards shares to the keeper.
  */
 
