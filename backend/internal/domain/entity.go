@@ -2,37 +2,37 @@ package domain
 
 import "time"
 
-type StrategyStatus string
+type IntentStatus string
 
 const (
-	StrategyPending   StrategyStatus = "PENDING"
-	StrategyExecuting StrategyStatus = "EXECUTING"
-	StrategyDone      StrategyStatus = "DONE"
+	IntentPending   IntentStatus = "PENDING"
+	IntentExecuting IntentStatus = "EXECUTING"
+	IntentDone      IntentStatus = "DONE"
 )
 
-type PendingStrategy struct {
-	ID             uint         `gorm:"primaryKey;autoIncrement"`
-	CommitmentHash string       `gorm:"uniqueIndex;size:66;not null"`
-	ChainID        int64        `gorm:"not null"`
-	Kind           StrategyKind `gorm:"size:20;not null;default:'LIMIT'"`
-	TokenIn        string       `gorm:"size:42;not null"`
-	TokenOut       string       `gorm:"size:42;not null"`
-	Size           string       `gorm:"not null"`
-	MinOut         string       `gorm:"not null"`
-	Expiry         int64        `gorm:"not null"`
-	LimitPrice     string       `gorm:"not null;default:'0'"`
-	Direction      int          `gorm:"not null;default:0"`
-	Nonce          string       `gorm:"size:66;not null"`
-	Nullifier      string       `gorm:"size:66;not null"`
+type PendingIntent struct {
+	ID             uint       `gorm:"primaryKey;autoIncrement"`
+	CommitmentHash string     `gorm:"uniqueIndex;size:66;not null"`
+	ChainID        int64      `gorm:"not null"`
+	Kind           IntentKind `gorm:"size:20;not null;default:'LIMIT'"`
+	TokenIn        string     `gorm:"size:42;not null"`
+	TokenOut       string     `gorm:"size:42;not null"`
+	Size           string     `gorm:"not null"`
+	MinOut         string     `gorm:"not null"`
+	Expiry         int64      `gorm:"not null"`
+	LimitPrice     string     `gorm:"not null;default:'0'"`
+	Direction      int        `gorm:"not null;default:0"`
+	Nonce          string     `gorm:"size:66;not null"`
+	Nullifier      string     `gorm:"size:66;not null"`
 	ScheduledLo    *int64
 	ScheduledHi    *int64
-	Status         StrategyStatus `gorm:"size:20;not null;default:'PENDING'"`
-	CreatedAt      time.Time      `gorm:"autoCreateTime"`
-	UpdatedAt      time.Time      `gorm:"autoUpdateTime"`
+	Status         IntentStatus `gorm:"size:20;not null;default:'PENDING'"`
+	CreatedAt      time.Time    `gorm:"autoCreateTime"`
+	UpdatedAt      time.Time    `gorm:"autoUpdateTime"`
 }
 
 type ExecutionStatus string
-type StrategyKind string
+type IntentKind string
 
 const (
 	StatusRegistered ExecutionStatus = "registered"
@@ -42,21 +42,21 @@ const (
 )
 
 const (
-	KindLimit  StrategyKind = "LIMIT"
-	KindDCA    StrategyKind = "DCA"
-	KindMarket StrategyKind = "MARKET"
+	KindLimit  IntentKind = "LIMIT"
+	KindDCA    IntentKind = "DCA"
+	KindMarket IntentKind = "MARKET"
 )
 
 const OnChainKindOrderFill = "ORDER_FILL"
 
 // ExecutionRecord is an anonymized on-chain event record.
-// No strategy parameters (price, size, direction) are ever stored.
+// No plaintext intent witness fields are stored in execution records.
 type ExecutionRecord struct {
 	ID             uint            `gorm:"primaryKey;autoIncrement"                                  json:"id"`
 	CommitmentHash string          `gorm:"uniqueIndex;size:66;not null"                              json:"commitment_hash"`
 	ChainID        int64           `gorm:"not null;index"                                            json:"chain_id"`
 	Status         ExecutionStatus `gorm:"size:20;not null;index"                                    json:"status"`
-	Kind           StrategyKind    `gorm:"size:20;not null;default:'LIMIT';index"                    json:"kind"`
+	Kind           IntentKind      `gorm:"size:20;not null;default:'LIMIT';index"                    json:"kind"`
 	TxHash         string          `gorm:"size:66"                                                   json:"tx_hash"`
 	BlockNumber    uint64          `                                                                 json:"block_number"`
 	GasUsed        uint64          `                                                                 json:"gas_used"`
@@ -87,7 +87,7 @@ type Statistics struct {
 type ExecutionFilters struct {
 	Query  string
 	Status ExecutionStatus
-	Kind   StrategyKind
+	Kind   IntentKind
 }
 
 type KeeperHealth struct {

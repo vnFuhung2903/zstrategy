@@ -3,7 +3,6 @@ package http
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,12 +16,10 @@ import (
 	"github.com/zstrategy/backend/internal/service"
 )
 
-const marketExecutionWaitTimeout = 2 * time.Minute
-
 type Handler struct {
 	stats           *service.StatsService
 	indexer         *service.IndexerService
-	strategyRepo    domain.StrategyRepository
+	intentRepo      domain.IntentRepository
 	monitor         *service.MonitorService
 	keeperURL       string
 	keeperAPISecret string
@@ -32,7 +29,7 @@ type Handler struct {
 func NewHandler(
 	stats *service.StatsService,
 	indexer *service.IndexerService,
-	strategyRepo domain.StrategyRepository,
+	intentRepo domain.IntentRepository,
 	monitor *service.MonitorService,
 	keeperURL string,
 	keeperAPISecret string,
@@ -40,7 +37,7 @@ func NewHandler(
 	return &Handler{
 		stats:           stats,
 		indexer:         indexer,
-		strategyRepo:    strategyRepo,
+		intentRepo:      intentRepo,
 		monitor:         monitor,
 		keeperURL:       keeperURL,
 		keeperAPISecret: keeperAPISecret,
@@ -74,7 +71,7 @@ func (h *Handler) ListExecutions(c *gin.Context) {
 		status == domain.StatusExecuted || status == domain.StatusCancelled || status == domain.StatusExpired {
 		filters.Status = status
 	}
-	if kind := parseStrategyKind(c.DefaultQuery("kind", "")); kind != "" {
+	if kind := parseIntentKind(c.DefaultQuery("kind", "")); kind != "" {
 		filters.Kind = kind
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -92,15 +89,15 @@ func (h *Handler) ListExecutions(c *gin.Context) {
 	})
 }
 
-// POST /api/v1/strategies/:hash/done
+// POST /api/v1/intents/:hash/done
 //
 // Keeper-side callback: invoked when proof generation or tx submission fails
 // definitively (e.g. nullifier already spent on-chain, or retry budget
-// exhausted) and there is no point continuing to retry. Marks the strategy as
+// exhausted) and there is no point continuing to retry. Marks the intent as
 // DONE so the monitor goroutine stops and does not re-trigger.
 //
 // Authenticated with the same shared bearer used for backend→keeper calls.
-func (h *Handler) MarkStrategyDone(c *gin.Context) {
+func (h *Handler) MarkIntentDone(c *gin.Context) {
 	if h.keeperAPISecret != "" {
 		auth := c.GetHeader("Authorization")
 		if auth != "Bearer "+h.keeperAPISecret {
@@ -132,8 +129,8 @@ func (h *Handler) MarkStrategyDone(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	if h.monitor != nil {
-		h.monitor.UpdateStatus(ctx, hash, domain.StrategyDone)
-	} else if err := h.strategyRepo.UpdateStatus(ctx, hash, domain.StrategyDone); err != nil {
+		h.monitor.UpdateStatus(ctx, hash, domain.IntentDone)
+	} else if err := h.intentRepo.UpdateStatus(ctx, hash, domain.IntentDone); err != nil {
 		errResponse(c, err)
 		return
 	}
@@ -150,8 +147,8 @@ func (h *Handler) GetKeeperHealth(c *gin.Context) {
 	ok(c, health)
 }
 
-// registerStrategyBody is the JSON body for POST /api/v1/strategies.
-type registerStrategyBody struct {
+// registerOrderIntentBody is the JSON body for POST /api/v1/intents/order.
+type registerOrderIntentBody struct {
 	CommitmentHash  string           `json:"commitmentHash"`
 	Kind            string           `json:"kind"`
 	ChainID         int64            `json:"chainId"`
@@ -164,8 +161,6 @@ type registerStrategyBody struct {
 	Direction       int              `json:"direction"`
 	Nonce           string           `json:"nonce"`
 	Nullifier       string           `json:"nullifier"`
-	ScheduledLo     *int64           `json:"scheduledLo,omitempty"`
-	ScheduledHi     *int64           `json:"scheduledHi,omitempty"`
 	EncryptedShares []encryptedShare `json:"encryptedShares"`
 }
 
@@ -179,18 +174,9 @@ type sharesPayload struct {
 	EncryptedShares  []encryptedShare `json:"encryptedShares"`
 }
 
-// POST /api/v1/strategies
-func (h *Handler) RegisterStrategy(c *gin.Context) {
-	h.registerStrategy(c, false)
-}
-
-// POST /api/v1/strategies/execute-sync
-func (h *Handler) RegisterStrategyAndWait(c *gin.Context) {
-	h.registerStrategy(c, true)
-}
-
-func (h *Handler) registerStrategy(c *gin.Context, waitForExecution bool) {
-	var body registerStrategyBody
+// POST /api/v1/intents/order
+func (h *Handler) RegisterOrderIntent(c *gin.Context) {
+	var body registerOrderIntentBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid body: %v", err)})
 		return
@@ -202,24 +188,20 @@ func (h *Handler) registerStrategy(c *gin.Context, waitForExecution bool) {
 		return
 	}
 
-	kind := parseStrategyKind(body.Kind)
+	kind := parseOrderIntentKind(body.Kind)
 	if kind == "" {
+		if strings.TrimSpace(body.Kind) != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "order intent kind must be LIMIT or MARKET"})
+			return
+		}
 		kind = domain.KindLimit
-	}
-	if waitForExecution && kind != domain.KindMarket {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "execute-sync is only supported for MARKET strategies"})
-		return
-	}
-	if waitForExecution && len(body.EncryptedShares) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "execute-sync requires encrypted shares"})
-		return
 	}
 	limitPrice := body.LimitPrice
 	if limitPrice == "" {
 		limitPrice = "0"
 	}
 
-	s := &domain.PendingStrategy{
+	s := &domain.PendingIntent{
 		CommitmentHash: body.CommitmentHash,
 		ChainID:        body.ChainID,
 		Kind:           kind,
@@ -232,31 +214,20 @@ func (h *Handler) registerStrategy(c *gin.Context, waitForExecution bool) {
 		Direction:      body.Direction,
 		Nonce:          body.Nonce,
 		Nullifier:      body.Nullifier,
-		ScheduledLo:    body.ScheduledLo,
-		ScheduledHi:    body.ScheduledHi,
-		Status:         domain.StrategyPending,
+		Status:         domain.IntentPending,
 	}
 
-	sharesForwarded := false
-	if waitForExecution {
-		if err := h.forwardSharesToKeeper([]string{body.CommitmentHash}, body.EncryptedShares); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			return
-		}
-		sharesForwarded = true
-	}
-
-	if err := h.strategyRepo.Save(c.Request.Context(), s); err != nil {
+	if err := h.intentRepo.Save(c.Request.Context(), s); err != nil {
 		errResponse(c, err)
 		return
 	}
 	if kind == domain.KindMarket && h.indexer != nil {
-		if err := h.indexer.UpdateExecutionStrategyKind(c.Request.Context(), body.CommitmentHash, domain.KindMarket); err != nil {
+		if err := h.indexer.UpdateExecutionIntentKind(c.Request.Context(), body.CommitmentHash, domain.KindMarket); err != nil {
 			log.Printf("[Handler] update execution kind for MARKET %s: %v", body.CommitmentHash, err)
 		}
 	}
 
-	if len(body.EncryptedShares) > 0 && !sharesForwarded {
+	if len(body.EncryptedShares) > 0 {
 		go func() {
 			if err := h.forwardSharesToKeeper([]string{body.CommitmentHash}, body.EncryptedShares); err != nil {
 				log.Printf("[Handler] forward shares to keeper: %v", err)
@@ -269,38 +240,13 @@ func (h *Handler) registerStrategy(c *gin.Context, waitForExecution bool) {
 		h.monitor.StartMonitoring(c.Request.Context(), s)
 	}
 
-	if waitForExecution {
-		if h.indexer == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "chain indexer unavailable"})
-			return
-		}
-		rec, err := h.indexer.WaitForExecuted(c.Request.Context(), body.CommitmentHash, marketExecutionWaitTimeout)
-		if err != nil {
-			if errors.Is(err, service.ErrExecutionWaitTimeout) {
-				c.JSON(http.StatusGatewayTimeout, gin.H{"error": err.Error()})
-				return
-			}
-			errResponse(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"status":         "executed",
-			"commitmentHash": body.CommitmentHash,
-			"txHash":         rec.TxHash,
-			"blockNumber":    rec.BlockNumber,
-			"gasUsed":        rec.GasUsed,
-			"executedAt":     rec.ExecutedAt,
-		})
-		return
-	}
-
 	c.JSON(http.StatusCreated, gin.H{"status": "accepted", "commitmentHash": body.CommitmentHash})
 }
 
-func parseStrategyKind(raw string) domain.StrategyKind {
-	switch domain.StrategyKind(raw) {
+func parseIntentKind(raw string) domain.IntentKind {
+	switch domain.IntentKind(raw) {
 	case domain.KindLimit, domain.KindMarket, domain.KindDCA:
-		return domain.StrategyKind(raw)
+		return domain.IntentKind(raw)
 	}
 	if raw == domain.OnChainKindOrderFill {
 		return domain.KindLimit
@@ -308,8 +254,19 @@ func parseStrategyKind(raw string) domain.StrategyKind {
 	return ""
 }
 
-// registerDcaGroupBody is the JSON body for POST /api/v1/dca-strategies.
-type registerDcaGroupBody struct {
+func parseOrderIntentKind(raw string) domain.IntentKind {
+	switch domain.IntentKind(raw) {
+	case domain.KindLimit, domain.KindMarket:
+		return domain.IntentKind(raw)
+	}
+	if raw == domain.OnChainKindOrderFill {
+		return domain.KindLimit
+	}
+	return ""
+}
+
+// registerDcaIntentBody is the JSON body for POST /api/v1/intents/dca.
+type registerDcaIntentBody struct {
 	ChainID         int64            `json:"chainId"`
 	TokenIn         string           `json:"tokenIn"`
 	TokenOut        string           `json:"tokenOut"`
@@ -329,9 +286,9 @@ type dcaRoundInput struct {
 	RoundIndex     int    `json:"roundIndex"`
 }
 
-// POST /api/v1/dca-strategies
-func (h *Handler) RegisterDcaGroup(c *gin.Context) {
-	var body registerDcaGroupBody
+// POST /api/v1/intents/dca
+func (h *Handler) RegisterDcaIntent(c *gin.Context) {
+	var body registerDcaIntentBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid body: %v", err)})
 		return
@@ -347,7 +304,7 @@ func (h *Handler) RegisterDcaGroup(c *gin.Context) {
 	for _, round := range body.Rounds {
 		lo := round.ScheduledLo
 		hi := round.ScheduledHi
-		s := &domain.PendingStrategy{
+		s := &domain.PendingIntent{
 			CommitmentHash: round.CommitmentHash,
 			ChainID:        body.ChainID,
 			Kind:           domain.KindDCA,
@@ -362,9 +319,9 @@ func (h *Handler) RegisterDcaGroup(c *gin.Context) {
 			Nullifier:      round.Nullifier,
 			ScheduledLo:    &lo,
 			ScheduledHi:    &hi,
-			Status:         domain.StrategyPending,
+			Status:         domain.IntentPending,
 		}
-		if err := h.strategyRepo.Save(ctx, s); err != nil {
+		if err := h.intentRepo.Save(ctx, s); err != nil {
 			log.Printf("[Handler] save DCA round %d: %v", round.RoundIndex, err)
 			continue
 		}

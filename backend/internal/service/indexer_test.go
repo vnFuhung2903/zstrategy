@@ -39,7 +39,7 @@ func (r *fakeExecutionRepo) UpdateStatus(_ context.Context, commitmentHash strin
 	return nil
 }
 
-func (r *fakeExecutionRepo) UpdateKind(_ context.Context, commitmentHash string, kind domain.StrategyKind) error {
+func (r *fakeExecutionRepo) UpdateKind(_ context.Context, commitmentHash string, kind domain.IntentKind) error {
 	rec := r.records[commitmentHash]
 	if rec == nil {
 		rec = &domain.ExecutionRecord{CommitmentHash: commitmentHash}
@@ -69,35 +69,35 @@ func (r *fakeExecutionRepo) List(_ context.Context, _ int64, filters domain.Exec
 	return nil, nil
 }
 
-type fakeStrategyRepo struct {
-	byHash map[string]*domain.PendingStrategy
+type fakeIntentRepo struct {
+	byHash map[string]*domain.PendingIntent
 }
 
-func (r fakeStrategyRepo) Save(context.Context, *domain.PendingStrategy) error { return nil }
-func (r fakeStrategyRepo) GetByHash(_ context.Context, commitmentHash string) (*domain.PendingStrategy, error) {
+func (r fakeIntentRepo) Save(context.Context, *domain.PendingIntent) error { return nil }
+func (r fakeIntentRepo) GetByHash(_ context.Context, commitmentHash string) (*domain.PendingIntent, error) {
 	return r.byHash[commitmentHash], nil
 }
-func (r fakeStrategyRepo) UpdateStatus(context.Context, string, domain.StrategyStatus) error {
+func (r fakeIntentRepo) UpdateStatus(context.Context, string, domain.IntentStatus) error {
 	return nil
 }
-func (r fakeStrategyRepo) ListPending(context.Context) ([]*domain.PendingStrategy, error) {
+func (r fakeIntentRepo) ListPending(context.Context) ([]*domain.PendingIntent, error) {
 	return nil, nil
 }
-func (r fakeStrategyRepo) CountByStatus(context.Context, domain.StrategyStatus) (int64, error) {
+func (r fakeIntentRepo) CountByStatus(context.Context, domain.IntentStatus) (int64, error) {
 	return 0, nil
 }
-func (r fakeStrategyRepo) ResetStuckExecuting(context.Context, time.Duration) ([]*domain.PendingStrategy, error) {
+func (r fakeIntentRepo) ResetStuckExecuting(context.Context, time.Duration) ([]*domain.PendingIntent, error) {
 	return nil, nil
 }
 
-func TestHandleRegisteredPreservesMarketKindFromPendingStrategy(t *testing.T) {
+func TestHandleRegisteredPreservesMarketKindFromPendingIntent(t *testing.T) {
 	ctx := context.Background()
 	hash := "0xmarket"
 	execRepo := newFakeExecutionRepo()
-	strategyRepo := fakeStrategyRepo{byHash: map[string]*domain.PendingStrategy{
+	intentRepo := fakeIntentRepo{byHash: map[string]*domain.PendingIntent{
 		hash: {CommitmentHash: hash, Kind: domain.KindMarket},
 	}}
-	svc := NewIndexerService(execRepo, strategyRepo, "", "")
+	svc := NewIndexerService(execRepo, intentRepo, "", "")
 
 	if err := svc.HandleRegistered(ctx, hash, domain.OnChainKindOrderFill, 421614, time.Now()); err != nil {
 		t.Fatalf("HandleRegistered: %v", err)
@@ -108,15 +108,15 @@ func TestHandleRegisteredPreservesMarketKindFromPendingStrategy(t *testing.T) {
 	}
 }
 
-func TestUpdateExecutionStrategyKindUpgradesExistingMarketRecord(t *testing.T) {
+func TestUpdateExecutionIntentKindUpgradesExistingMarketRecord(t *testing.T) {
 	ctx := context.Background()
 	hash := "0xrace"
 	execRepo := newFakeExecutionRepo()
 	execRepo.records[hash] = &domain.ExecutionRecord{CommitmentHash: hash, Kind: domain.KindLimit}
 	svc := NewIndexerService(execRepo, nil, "", "")
 
-	if err := svc.UpdateExecutionStrategyKind(ctx, hash, domain.KindMarket); err != nil {
-		t.Fatalf("UpdateExecutionStrategyKind: %v", err)
+	if err := svc.UpdateExecutionIntentKind(ctx, hash, domain.KindMarket); err != nil {
+		t.Fatalf("UpdateExecutionIntentKind: %v", err)
 	}
 
 	if got := execRepo.records[hash].Kind; got != domain.KindMarket {

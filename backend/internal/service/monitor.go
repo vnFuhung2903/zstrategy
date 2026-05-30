@@ -57,15 +57,15 @@ type executeRequest struct {
 	ScheduledHi    *int64 `json:"scheduledHi"`
 }
 
-// trackedMonitor pairs a goroutine's cancel func with the strategy kind so we
+// trackedMonitor pairs a goroutine's cancel func with the intent kind so we
 // can decrement the right Prometheus gauge label when monitoring stops.
 type trackedMonitor struct {
 	cancel context.CancelFunc
-	kind   domain.StrategyKind
+	kind   domain.IntentKind
 }
 
 type MonitorService struct {
-	repo            domain.StrategyRepository
+	repo            domain.IntentRepository
 	ethClient       *ethclient.Client
 	registryAddr    common.Address
 	hasRegistry     bool
@@ -87,7 +87,7 @@ type MonitorService struct {
 }
 
 func NewMonitorService(
-	repo domain.StrategyRepository,
+	repo domain.IntentRepository,
 	ethClient *ethclient.Client,
 	registryAddress string,
 	keeperURL string,
@@ -102,7 +102,7 @@ func NewMonitorService(
 		addr = common.HexToAddress(registryAddress)
 	}
 	if !hasRegistry {
-		log.Println("[Monitor] COMMITMENT_REGISTRY_ADDRESS not configured — LIMIT strategy monitoring disabled")
+		log.Println("[Monitor] COMMITMENT_REGISTRY_ADDRESS not configured — LIMIT intent monitoring disabled")
 	}
 	return &MonitorService{
 		repo:            repo,
@@ -118,7 +118,7 @@ func NewMonitorService(
 	}
 }
 
-// RehydrateFromDB restarts monitoring goroutines for all PENDING strategies
+// RehydrateFromDB restarts monitoring goroutines for all PENDING intents
 // on backend startup. It first resets any rows still in EXECUTING (orphaned by
 // a previous crash mid-flight) back to PENDING so they are picked up too. The
 // passed context is also captured as the long-lived root for goroutines
@@ -134,15 +134,15 @@ func (m *MonitorService) RehydrateFromDB(ctx context.Context) {
 		log.Printf("[Monitor] reset %d orphaned EXECUTING rows to PENDING", len(reset))
 	}
 
-	strategies, err := m.repo.ListPending(ctx)
+	intents, err := m.repo.ListPending(ctx)
 	if err != nil {
 		log.Printf("[Monitor] rehydrate error: %v", err)
 		return
 	}
-	for _, s := range strategies {
+	for _, s := range intents {
 		m.startMonitoring(ctx, s)
 	}
-	log.Printf("[Monitor] rehydrated %d pending strategies", len(strategies))
+	log.Printf("[Monitor] rehydrated %d pending intents", len(intents))
 }
 
 // StartStuckSweeper runs a periodic sweeper that resets EXECUTING rows older
@@ -178,8 +178,8 @@ func (m *MonitorService) sweepStuckExecuting(ctx context.Context) {
 	}
 }
 
-// StartMonitoring begins fill-condition polling for a strategy.
-func (m *MonitorService) StartMonitoring(ctx context.Context, s *domain.PendingStrategy) {
+// StartMonitoring begins fill-condition polling for an intent.
+func (m *MonitorService) StartMonitoring(ctx context.Context, s *domain.PendingIntent) {
 	m.startMonitoring(ctx, s)
 }
 
@@ -190,21 +190,21 @@ func (m *MonitorService) StopMonitoring(commitmentHash string) {
 	if tm, ok := m.stopChans[commitmentHash]; ok {
 		tm.cancel()
 		delete(m.stopChans, commitmentHash)
-		metrics.PendingStrategies.WithLabelValues(string(tm.kind)).Dec()
+		metrics.PendingIntents.WithLabelValues(string(tm.kind)).Dec()
 	}
 }
 
-// UpdateStatus updates a strategy's status in the DB and stops monitoring if done.
-func (m *MonitorService) UpdateStatus(ctx context.Context, commitmentHash string, status domain.StrategyStatus) {
+// UpdateStatus updates an intent's status in the DB and stops monitoring if done.
+func (m *MonitorService) UpdateStatus(ctx context.Context, commitmentHash string, status domain.IntentStatus) {
 	if err := m.repo.UpdateStatus(ctx, commitmentHash, status); err != nil {
 		log.Printf("[Monitor] UpdateStatus %s: %v", commitmentHash[:10], err)
 	}
-	if status == domain.StrategyDone {
+	if status == domain.IntentDone {
 		m.StopMonitoring(commitmentHash)
 	}
 }
 
-func (m *MonitorService) startMonitoring(ctx context.Context, s *domain.PendingStrategy) {
+func (m *MonitorService) startMonitoring(ctx context.Context, s *domain.PendingIntent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -220,12 +220,12 @@ func (m *MonitorService) startMonitoring(ctx context.Context, s *domain.PendingS
 	}
 	childCtx, cancel := context.WithCancel(parent)
 	m.stopChans[s.CommitmentHash] = trackedMonitor{cancel: cancel, kind: s.Kind}
-	metrics.PendingStrategies.WithLabelValues(string(s.Kind)).Inc()
+	metrics.PendingIntents.WithLabelValues(string(s.Kind)).Inc()
 
 	go m.monitorLoop(childCtx, s)
 }
 
-func (m *MonitorService) monitorLoop(ctx context.Context, s *domain.PendingStrategy) {
+func (m *MonitorService) monitorLoop(ctx context.Context, s *domain.PendingIntent) {
 	ticker := time.NewTicker(monitorTickInterval)
 	defer ticker.Stop()
 
@@ -250,7 +250,7 @@ func (m *MonitorService) monitorLoop(ctx context.Context, s *domain.PendingStrat
 	}
 }
 
-func (m *MonitorService) evaluateAndMaybeTrigger(ctx context.Context, s *domain.PendingStrategy) {
+func (m *MonitorService) evaluateAndMaybeTrigger(ctx context.Context, s *domain.PendingIntent) {
 	evalStart := time.Now()
 	defer func() {
 		metrics.MonitorEvalDuration.WithLabelValues(string(s.Kind)).Observe(time.Since(evalStart).Seconds())
@@ -260,7 +260,7 @@ func (m *MonitorService) evaluateAndMaybeTrigger(ctx context.Context, s *domain.
 	// Check expiry.
 	if s.Expiry > 0 && now > s.Expiry {
 		log.Printf("[Monitor] %s... expired — stopping", s.CommitmentHash[:10])
-		m.UpdateStatus(ctx, s.CommitmentHash, domain.StrategyDone)
+		m.UpdateStatus(ctx, s.CommitmentHash, domain.IntentDone)
 		return
 	}
 
@@ -276,7 +276,7 @@ func (m *MonitorService) evaluateAndMaybeTrigger(ctx context.Context, s *domain.
 	log.Printf("[Monitor] fill condition MET for %s... — triggering keeper", s.CommitmentHash[:10])
 
 	// Mark EXECUTING before firing so concurrent ticks don't re-trigger.
-	if err := m.repo.UpdateStatus(ctx, s.CommitmentHash, domain.StrategyExecuting); err != nil {
+	if err := m.repo.UpdateStatus(ctx, s.CommitmentHash, domain.IntentExecuting); err != nil {
 		log.Printf("[Monitor] UpdateStatus EXECUTING %s...: %v", s.CommitmentHash[:10], err)
 		return
 	}
@@ -285,7 +285,7 @@ func (m *MonitorService) evaluateAndMaybeTrigger(ctx context.Context, s *domain.
 	go m.triggerKeeper(s)
 }
 
-func (m *MonitorService) isFillConditionMet(ctx context.Context, s *domain.PendingStrategy, now int64) (bool, error) {
+func (m *MonitorService) isFillConditionMet(ctx context.Context, s *domain.PendingIntent, now int64) (bool, error) {
 	if s.Kind == domain.KindMarket {
 		// MARKET: fires on first goroutine tick. No oracle poll, no time window —
 		// the on-chain commitment uses a sentinel limit price (u64.max for BUY,
@@ -435,7 +435,7 @@ func (m *MonitorService) callChainlinkFeed(ctx context.Context, feedAddr common.
 	return ans, dec, nil
 }
 
-func (m *MonitorService) triggerKeeper(s *domain.PendingStrategy) {
+func (m *MonitorService) triggerKeeper(s *domain.PendingIntent) {
 	// On the keeper wire, LIMIT and MARKET both use ORDER_FILL: same circuit,
 	// same verifier, same on-chain kind=0. The keeper's oracle re-verify
 	// trivially passes for MARKET against the sentinel limit price.
@@ -497,10 +497,10 @@ func (m *MonitorService) triggerKeeper(s *domain.PendingStrategy) {
 	log.Printf("[Monitor] keeper rejected trigger for %s... (status=%d) — resuming monitor", s.CommitmentHash[:10], resp.StatusCode)
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := m.repo.UpdateStatus(rollbackCtx, s.CommitmentHash, domain.StrategyPending); err != nil {
+	if err := m.repo.UpdateStatus(rollbackCtx, s.CommitmentHash, domain.IntentPending); err != nil {
 		log.Printf("[Monitor] reset to PENDING after rejection: %v", err)
 		return
 	}
-	s.Status = domain.StrategyPending
+	s.Status = domain.IntentPending
 	m.startMonitoring(context.Background(), s)
 }

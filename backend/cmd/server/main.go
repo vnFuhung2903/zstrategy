@@ -51,9 +51,9 @@ func main() {
 
 	// ── Dependency wiring ─────────────────────────────────────────────────────
 	execRepo := repository.NewExecutionRepo(db)
-	strategyRepo := repository.NewStrategyRepo(db)
-	indexerSvc := service.NewIndexerService(execRepo, strategyRepo, cfg.KeeperURL, cfg.KeeperAPISecret)
-	statsSvc := service.NewStatsService(execRepo, strategyRepo, redisClient, cfg.KeeperURL)
+	intentRepo := repository.NewIntentRepo(db)
+	indexerSvc := service.NewIndexerService(execRepo, intentRepo, cfg.KeeperURL, cfg.KeeperAPISecret)
+	statsSvc := service.NewStatsService(execRepo, intentRepo, redisClient, cfg.KeeperURL)
 
 	// ── Ethereum client (shared between indexer and monitor) ──────────────────
 	var ethClient *ethclient.Client
@@ -66,14 +66,14 @@ func main() {
 	}
 
 	// ── Monitor service ───────────────────────────────────────────────────────
-	monitorSvc := service.NewMonitorService(strategyRepo, ethClient, cfg.CommitmentRegistryAddress, cfg.KeeperURL, cfg.KeeperAPISecret)
+	monitorSvc := service.NewMonitorService(intentRepo, ethClient, cfg.CommitmentRegistryAddress, cfg.KeeperURL, cfg.KeeperAPISecret)
 	indexerSvc.Monitor = monitorSvc
 
 	// ── Root context ──────────────────────────────────────────────────────────
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
 
-	// Rehydrate pending strategies on startup; reset orphaned EXECUTING rows.
+	// Rehydrate pending intents on startup; reset orphaned EXECUTING rows.
 	monitorSvc.RehydrateFromDB(rootCtx)
 	monitorSvc.StartStuckSweeper(rootCtx)
 
@@ -91,7 +91,7 @@ func main() {
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	h := handler.NewHandler(statsSvc, indexerSvc, strategyRepo, monitorSvc, cfg.KeeperURL, cfg.KeeperAPISecret)
+	h := handler.NewHandler(statsSvc, indexerSvc, intentRepo, monitorSvc, cfg.KeeperURL, cfg.KeeperAPISecret)
 	router := handler.NewRouter(h, cfg.MetricsEnabled)
 
 	srv := &http.Server{

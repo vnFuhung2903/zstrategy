@@ -13,9 +13,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// StrategiesRegistered counts CommitmentRegistered events the chain indexer
-// has processed. Labels: chain_id, kind (LIMIT|MARKET|DCA).
-var StrategiesRegistered = promauto.NewCounterVec(prometheus.CounterOpts{
+// IntentsRegistered counts CommitmentRegistered events the chain indexer has
+// processed. Labels: chain_id, kind (LIMIT|MARKET|DCA). Metric names stay
+// stable for existing Grafana dashboards.
+var IntentsRegistered = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "zstrategy_strategies_registered_total",
 	Help: "Total commitments registered, by chain and kind.",
 }, []string{"chain_id", "kind"})
@@ -27,11 +28,11 @@ var ExecutionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "Total commitment terminal events, by chain, kind, and status.",
 }, []string{"chain_id", "kind", "status"})
 
-// PendingStrategies is the live count of in-flight monitor goroutines. Bumped
+// PendingIntents is the live count of in-flight monitor goroutines. Bumped
 // up on StartMonitoring, down on StopMonitoring. Labels: kind.
-var PendingStrategies = promauto.NewGaugeVec(prometheus.GaugeOpts{
+var PendingIntents = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "zstrategy_pending_strategies",
-	Help: "Currently monitored pending strategies, by kind.",
+	Help: "Currently monitored pending intents, by kind.",
 }, []string{"kind"})
 
 // MonitorEvalDuration tracks how long a single monitor-tick evaluation takes

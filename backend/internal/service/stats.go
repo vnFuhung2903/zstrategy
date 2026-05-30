@@ -15,20 +15,20 @@ import (
 const statsCacheTTL = 30 * time.Second
 
 type StatsService struct {
-	repo         domain.ExecutionRepository
-	strategyRepo domain.StrategyRepository
-	cache        *redis.Client
-	keeperURL    string
-	httpClient   *http.Client
+	repo       domain.ExecutionRepository
+	intentRepo domain.IntentRepository
+	cache      *redis.Client
+	keeperURL  string
+	httpClient *http.Client
 }
 
-func NewStatsService(repo domain.ExecutionRepository, strategyRepo domain.StrategyRepository, cache *redis.Client, keeperURL string) *StatsService {
+func NewStatsService(repo domain.ExecutionRepository, intentRepo domain.IntentRepository, cache *redis.Client, keeperURL string) *StatsService {
 	return &StatsService{
-		repo:         repo,
-		strategyRepo: strategyRepo,
-		cache:        cache,
-		keeperURL:    keeperURL,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		repo:       repo,
+		intentRepo: intentRepo,
+		cache:      cache,
+		keeperURL:  keeperURL,
+		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -82,8 +82,8 @@ func (s *StatsService) GetKeeperHealth(ctx context.Context) (*domain.KeeperHealt
 	}
 
 	monitored := 0
-	if s.strategyRepo != nil {
-		if n, err := s.strategyRepo.CountByStatus(ctx, domain.StrategyPending); err == nil {
+	if s.intentRepo != nil {
+		if n, err := s.intentRepo.CountByStatus(ctx, domain.IntentPending); err == nil {
 			monitored = int(n)
 		}
 	}

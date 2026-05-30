@@ -50,7 +50,7 @@ func (r *ExecutionRepo) UpdateStatus(
 	return nil
 }
 
-func (r *ExecutionRepo) UpdateKind(ctx context.Context, commitmentHash string, kind domain.StrategyKind) error {
+func (r *ExecutionRepo) UpdateKind(ctx context.Context, commitmentHash string, kind domain.IntentKind) error {
 	err := r.db.WithContext(ctx).
 		Model(&domain.ExecutionRecord{}).
 		Where("commitment_hash = ?", commitmentHash).

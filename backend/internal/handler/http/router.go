@@ -24,10 +24,9 @@ func NewRouter(h *Handler, metricsEnabled bool) *gin.Engine {
 		v1.GET("/stats", h.GetStats)
 		v1.GET("/executions", h.ListExecutions)
 		v1.GET("/keeper/health", h.GetKeeperHealth)
-		v1.POST("/strategies", h.RegisterStrategy)
-		v1.POST("/strategies/execute-sync", h.RegisterStrategyAndWait)
-		v1.POST("/strategies/:hash/done", h.MarkStrategyDone)
-		v1.POST("/dca-strategies", h.RegisterDcaGroup)
+		v1.POST("/intents/order", h.RegisterOrderIntent)
+		v1.POST("/intents/dca", h.RegisterDcaIntent)
+		v1.POST("/intents/:hash/done", h.MarkIntentDone)
 	}
 
 	return r
