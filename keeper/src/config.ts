@@ -36,7 +36,7 @@ export const config = {
   // share arrays for a 10-round DCA with N=5 keepers fit well under 64kb.
   apiBodyLimit:             optional("API_BODY_LIMIT", "256kb"),
 
-  // Backend URL for keeper→backend callbacks (e.g. marking a strategy DONE
+  // Backend URL for keeper→backend callbacks (e.g. marking an intent DONE
   // after a definitive on-chain revert so the monitor goroutine stops retrying).
   // Empty means "no callbacks"; the periodic stuck-EXECUTING sweeper still recovers.
   backendUrl:               optional("BACKEND_URL", ""),

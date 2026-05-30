@@ -7,7 +7,7 @@ import { config } from "../config";
 // The trigger-based keeper only ever writes `executeCommitment`. It does NOT
 // subscribe to chain events (that's the Go backend's chain indexer) and does
 // NOT read commitment status or the paused flag from the contract (the Go
-// backend pre-filters via the pending_strategies table). Keep the ABI surface
+// backend pre-filters via the pending_intents table). Keep the ABI surface
 // minimal — adding read methods invites accidental coupling and divergence
 // between the keeper and indexer views of chain state.
 

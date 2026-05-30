@@ -12,13 +12,13 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
- * Notify the Go backend that a strategy is definitively done (e.g. nullifier
+ * Notify the Go backend that an intent is definitively done (e.g. nullifier
  * spent, retry budget exhausted). Fire-and-forget: if the call fails, the
  * 10-minute stuck-EXECUTING sweeper will eventually unwedge it anyway.
  */
 async function notifyBackendDone(commitmentHash: string, reason: string): Promise<void> {
   if (!config.backendUrl) return;
-  const url = `${config.backendUrl.replace(/\/+$/, "")}/api/v1/strategies/${commitmentHash}/done`;
+  const url = `${config.backendUrl.replace(/\/+$/, "")}/api/v1/intents/${commitmentHash}/done`;
   try {
     await fetch(url, {
       method:  "POST",
@@ -188,7 +188,7 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
       console.warn(`[Submitter] attempt ${attempt + 1} failed: ${lastError.message}`);
 
       if (isUserFixableRevert(lastError.message)) {
-        // Leave the strategy EXECUTING in the backend; the stuck-EXECUTING
+        // Leave the intent EXECUTING in the backend; the stuck-EXECUTING
         // sweeper recovers it after 10 min, by which point the user may have
         // fixed the underlying issue (e.g. topped up the gas tank).
         console.warn(`[Submitter] user-fixable revert — not retrying, sweeper will resume`);
@@ -221,7 +221,7 @@ export async function submitExecution(req: ExecuteRequest): Promise<string> {
 /**
  * Reverts the user can recover from by changing their state off-chain
  * (e.g. topping up the gas tank). The keeper must NOT call `notifyBackendDone`
- * for these — that would mark the strategy permanently DONE and orphan it,
+ * for these — that would mark the intent permanently DONE and orphan it,
  * preventing recovery. Instead, throw and let the backend's stuck-EXECUTING
  * sweeper reset the row to PENDING after its timeout, by which point the
  * user may have fixed the underlying issue.

@@ -11,7 +11,7 @@ src/
   index.ts               # bootstrap: wires API + state init
   keeper.ts              # in-memory state + log banner (no tick loop)
   config.ts              # env loader (validates required vars)
-  types.ts               # OrderKind, Direction, ExecuteRequest, OraclePrice, KeeperState
+  types.ts               # CircuitKind, Direction, ExecuteRequest, KeeperState
   api/server.ts          # express routes (see below)
   chain/
     contracts.ts         # ethers contract handles + event ABIs
@@ -46,7 +46,7 @@ test/
 
 **Backend → keeper flow.** The Go backend forwards encrypted shares once at registration (one POST with all commitment hashes), then triggers `/api/execute` when the fill condition is met. On terminal chain events (executed / cancelled / expired), the indexer calls DELETE to prune shares.
 
-**Keeper → backend flow.** On a definitive on-chain revert (e.g. nullifier already spent) or after the retry budget is exhausted, the submitter posts to `BACKEND_URL/api/v1/strategies/<hash>/done` so the monitor row leaves EXECUTING and the goroutine stops.
+**Keeper -> backend flow.** On a definitive on-chain revert (e.g. nullifier already spent) or after the retry budget is exhausted, the submitter posts to `BACKEND_URL/api/v1/intents/<hash>/done` so the monitor row leaves EXECUTING and the goroutine stops.
 
 ## Prerequisites
 
@@ -67,7 +67,6 @@ RPC_URL=https://...
 CHAIN_ID=421614
 KEEPER_PRIVATE_KEY=0x...                  # signs executeCommitment txs
 COMMITMENT_REGISTRY_ADDRESS=0x...          # also used to look up priceFeeds for oracle re-verify
-COLLATERAL_VAULT_ADDRESS=0x...
 
 API_PORT=3001
 API_SECRET=...                             # bearer for /api/shares, /api/execute, DELETE

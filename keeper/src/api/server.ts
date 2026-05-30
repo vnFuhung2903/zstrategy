@@ -73,7 +73,7 @@ app.get("/api/health", (_req: Request, res: Response) => {
 //
 // Public so the frontend can fetch the keypair set pre-wallet. A simple
 // per-source-IP token bucket prevents trivial enumeration / DoS — legitimate
-// clients call this once per strategy registration.
+// clients call this once per intent registration.
 
 const keepersBuckets = new Map<string, { tokens: number; updated: number }>();
 const KEEPERS_RATE_PER_MIN = 30; // ~1 every 2s, plenty for legitimate use
@@ -122,7 +122,7 @@ app.get("/api/keepers", keepersRateLimit, (_req: Request, res: Response) => {
 // ── POST /api/shares ────────────────────────────────────────────────────────
 //
 // Go backend forwards encrypted shares here after receiving them from the
-// frontend via POST /api/v1/strategies (single hash) or /api/v1/dca-strategies
+// frontend via POST /api/v1/intents/order (single hash) or /api/v1/intents/dca
 // (N round hashes share one set of shares). This keeper filters for its own
 // keeperId and stores one row per (commitmentHash, keeperId) pair.
 
