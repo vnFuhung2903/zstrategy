@@ -29,11 +29,12 @@ export function useExecutions(
   });
 }
 
-export function useKeeperHealth() {
+export function useExecutorTickets(limit = 20) {
+  const chainId = useChainId();
   return useQuery({
-    queryKey: ["keeper-health"],
-    queryFn:  api.keeperHealth,
-    refetchInterval: 15_000,
+    queryKey: ["executor-tickets", chainId, limit],
+    queryFn:  () => api.executorTickets(chainId, limit),
+    refetchInterval: 10_000,
     retry: false,
   });
 }

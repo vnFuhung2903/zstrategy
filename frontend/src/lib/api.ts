@@ -20,6 +20,7 @@ export interface Statistics {
 
 export type ExecutionStatus = "registered" | "executed" | "cancelled" | "expired";
 export type IntentKind = "LIMIT" | "MARKET" | "DCA";
+export type IntentCircuitKind = "ORDER_FILL" | "DCA";
 
 export interface ExecutionRecord {
   id:              number;
@@ -34,25 +35,49 @@ export interface ExecutionRecord {
   executed_at:     string | null;
 }
 
-export interface KeeperHealth {
-  online:          boolean;
-  monitored_count: number;
-  executed_count:  number;
-  failed_count:    number;
-  last_seen_at:    string;
+export interface ExecutionTicket {
+  version:         number;
+  chainId:         number;
+  registry:        `0x${string}`;
+  commitmentHash:  `0x${string}`;
+  kind:            IntentCircuitKind;
+  nullifier:       `0x${string}`;
+  fillRef:         string;
+  proof:           `0x${string}`;
+  ticketExpiresAt: number;
+  executor?:       `0x${string}`;
+  packageHash:     `0x${string}`;
+  proverIds:       string[];
+  proverSignature: `0x${string}`;
+}
+
+export interface ExecutorTicketEnvelope {
+  commitmentHash:  `0x${string}`;
+  chainId:         number;
+  registry:        `0x${string}`;
+  intentKind:      IntentKind;
+  circuitKind:     IntentCircuitKind;
+  ticketExpiresAt: number;
+  leasedBy?:       `0x${string}`;
+  leaseExpiresAt?: number;
+  ticket:          ExecutionTicket;
 }
 
 // Two response envelope shapes the backend uses:
-//   1. ok(c, data)            → {"data": <data>}                  // stats, keeper health
+//   1. ok(c, data)            → {"data": <data>}                  // stats
 //   2. raw with metadata      → {"data": [...], "limit": N, ...}  // paginated executions
 // Each endpoint method below knows its own shape — no heuristic unwrap, since
 // /executions and ok() both have a top-level "data" key with different
 // semantics (collapsed vs. envelope).
 
-async function fetchJson(path: string): Promise<unknown> {
-  const res = await fetch(`${BASE}${path}`, { next: { revalidate: 0 } });
+async function requestJson(path: string, init: RequestInit = {}): Promise<unknown> {
+  const res = await fetch(`${BASE}${path}`, { cache: "no-store", ...init });
   if (!res.ok) throw new Error(`API ${path}: ${res.status}`);
   return res.json();
+}
+
+async function fetchJson(path: string): Promise<unknown> {
+  return requestJson(path);
 }
 
 export const api = {
@@ -77,8 +102,25 @@ export const api = {
     if (filters.kind) params.set("kind", filters.kind);
     return await fetchJson(`/api/v1/executions?${params.toString()}`) as { data: ExecutionRecord[]; limit: number; offset: number };
   },
-  keeperHealth: async (): Promise<KeeperHealth> => {
-    const json = await fetchJson("/api/v1/keeper/health");
-    return (json as { data: KeeperHealth }).data;
+  executorTickets: async (chainId = DEFAULT_CHAIN_ID, limit = 20):
+      Promise<{ data: ExecutorTicketEnvelope[]; limit: number }> => {
+    const params = new URLSearchParams({
+      chain_id: String(chainId),
+      limit:    String(limit),
+    });
+    return await fetchJson(`/api/v1/executor/tickets?${params.toString()}`) as { data: ExecutorTicketEnvelope[]; limit: number };
+  },
+  claimExecutorTicket: async (chainId: number, executor: `0x${string}`): Promise<ExecutorTicketEnvelope | null> => {
+    const params = new URLSearchParams({ chain_id: String(chainId) });
+    const res = await fetch(`${BASE}/api/v1/executor/tickets/claim?${params.toString()}`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ executor }),
+      cache:   "no-store",
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`API /api/v1/executor/tickets/claim: ${res.status}`);
+    const json = await res.json() as { data: ExecutorTicketEnvelope };
+    return json.data;
   },
 };
