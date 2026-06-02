@@ -5,30 +5,33 @@ import "time"
 type IntentStatus string
 
 const (
-	IntentPending   IntentStatus = "PENDING"
-	IntentExecuting IntentStatus = "EXECUTING"
-	IntentDone      IntentStatus = "DONE"
+	IntentPending     IntentStatus = "PENDING"
+	IntentEvaluating  IntentStatus = "EVALUATING"
+	IntentTicketReady IntentStatus = "TICKET_READY"
+	IntentDone        IntentStatus = "DONE"
+	IntentFailed      IntentStatus = "FAILED"
 )
 
 type PendingIntent struct {
-	ID             uint       `gorm:"primaryKey;autoIncrement"`
-	CommitmentHash string     `gorm:"uniqueIndex;size:66;not null"`
-	ChainID        int64      `gorm:"not null"`
-	Kind           IntentKind `gorm:"size:20;not null;default:'LIMIT'"`
-	TokenIn        string     `gorm:"size:42;not null"`
-	TokenOut       string     `gorm:"size:42;not null"`
-	Size           string     `gorm:"not null"`
-	MinOut         string     `gorm:"not null"`
-	Expiry         int64      `gorm:"not null"`
-	LimitPrice     string     `gorm:"not null;default:'0'"`
-	Direction      int        `gorm:"not null;default:0"`
-	Nonce          string     `gorm:"size:66;not null"`
-	Nullifier      string     `gorm:"size:66;not null"`
-	ScheduledLo    *int64
-	ScheduledHi    *int64
-	Status         IntentStatus `gorm:"size:20;not null;default:'PENDING'"`
-	CreatedAt      time.Time    `gorm:"autoCreateTime"`
-	UpdatedAt      time.Time    `gorm:"autoUpdateTime"`
+	ID              uint       `gorm:"primaryKey;autoIncrement"`
+	CommitmentHash  string     `gorm:"uniqueIndex;size:66;not null"`
+	ChainID         int64      `gorm:"not null"`
+	Registry        string     `gorm:"size:42;not null"`
+	Kind            IntentKind `gorm:"size:20;not null;default:'LIMIT'"`
+	TokenIn         string     `gorm:"size:42;not null"`
+	TokenOut        string     `gorm:"size:42;not null"`
+	Size            string     `gorm:"not null"`
+	MinOut          string     `gorm:"not null"`
+	Expiry          int64      `gorm:"not null"`
+	WitnessPackage  string     `gorm:"type:jsonb;not null"`
+	Ticket          string     `gorm:"type:jsonb"`
+	TicketExpiresAt *time.Time
+	LeasedBy        string `gorm:"size:42"`
+	LeaseExpiresAt  *time.Time
+	LastError       string       `gorm:"type:text"`
+	Status          IntentStatus `gorm:"size:20;not null;default:'PENDING'"`
+	CreatedAt       time.Time    `gorm:"autoCreateTime"`
+	UpdatedAt       time.Time    `gorm:"autoUpdateTime"`
 }
 
 type ExecutionStatus string
@@ -48,6 +51,62 @@ const (
 )
 
 const OnChainKindOrderFill = "ORDER_FILL"
+
+type IntentCircuitKind string
+
+const (
+	CircuitKindOrderFill IntentCircuitKind = "ORDER_FILL"
+	CircuitKindDCA       IntentCircuitKind = "DCA"
+)
+
+type PublicIntentMetadata struct {
+	Version        int               `json:"version"`
+	ChainID        int64             `json:"chainId"`
+	Registry       string            `json:"registry"`
+	CommitmentHash string            `json:"commitmentHash"`
+	Kind           IntentCircuitKind `json:"kind"`
+	TokenIn        string            `json:"tokenIn"`
+	TokenOut       string            `json:"tokenOut"`
+	Size           string            `json:"size"`
+	MinOut         string            `json:"minOut"`
+	Expiry         int64             `json:"expiry"`
+}
+
+type EncryptedWitnessPackage struct {
+	Version          int                  `json:"version"`
+	PackageHash      string               `json:"packageHash"`
+	CommitmentHash   string               `json:"commitmentHash"`
+	Kind             IntentCircuitKind    `json:"kind"`
+	CommitteeID      string               `json:"committeeId"`
+	EnclaveKeyID     string               `json:"enclaveKeyId"`
+	EncryptionScheme string               `json:"encryptionScheme"`
+	Ciphertext       string               `json:"ciphertext"`
+	AAD              PublicIntentMetadata `json:"aad"`
+}
+
+type FillContext struct {
+	ChainID        int64  `json:"chainId"`
+	Registry       string `json:"registry"`
+	BlockNumber    string `json:"blockNumber,omitempty"`
+	BlockTimestamp int64  `json:"blockTimestamp"`
+	OraclePrice    string `json:"oraclePrice,omitempty"`
+}
+
+type ExecutionTicket struct {
+	Version         int               `json:"version"`
+	ChainID         int64             `json:"chainId"`
+	Registry        string            `json:"registry"`
+	CommitmentHash  string            `json:"commitmentHash"`
+	Kind            IntentCircuitKind `json:"kind"`
+	Nullifier       string            `json:"nullifier"`
+	FillRef         string            `json:"fillRef"`
+	Proof           string            `json:"proof"`
+	TicketExpiresAt int64             `json:"ticketExpiresAt"`
+	Executor        string            `json:"executor,omitempty"`
+	PackageHash     string            `json:"packageHash"`
+	ProverIDs       []string          `json:"proverIds"`
+	ProverSignature string            `json:"proverSignature"`
+}
 
 // ExecutionRecord is an anonymized on-chain event record.
 // No plaintext intent witness fields are stored in execution records.
@@ -88,12 +147,4 @@ type ExecutionFilters struct {
 	Query  string
 	Status ExecutionStatus
 	Kind   IntentKind
-}
-
-type KeeperHealth struct {
-	Online         bool      `json:"online"`
-	MonitoredCount int       `json:"monitored_count"`
-	ExecutedCount  int       `json:"executed_count"`
-	FailedCount    int       `json:"failed_count"`
-	LastSeenAt     time.Time `json:"last_seen_at"`
 }

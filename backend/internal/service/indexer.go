@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/zstrategy/backend/internal/domain"
@@ -14,46 +12,32 @@ import (
 )
 
 type IndexerService struct {
-	repo            domain.ExecutionRepository
-	intentRepo      domain.IntentRepository
-	Monitor         *MonitorService
-	keeperURL       string
-	keeperAPISecret string
-	httpClient      *http.Client
+	repo       domain.ExecutionRepository
+	intentRepo domain.IntentRepository
+	Monitor    *MonitorService
+	Enclave    EnclaveClient
 }
 
-func NewIndexerService(repo domain.ExecutionRepository, intentRepo domain.IntentRepository, keeperURL, keeperAPISecret string) *IndexerService {
+func NewIndexerService(repo domain.ExecutionRepository, intentRepo domain.IntentRepository) *IndexerService {
 	return &IndexerService{
-		repo:            repo,
-		intentRepo:      intentRepo,
-		keeperURL:       keeperURL,
-		keeperAPISecret: keeperAPISecret,
-		httpClient:      &http.Client{Timeout: 10 * time.Second},
+		repo:       repo,
+		intentRepo: intentRepo,
 	}
 }
 
-// pruneKeeperShares fires a fire-and-forget DELETE to the keeper so encrypted
-// share rows for a finalized commitment do not accumulate. The keeper's
-// nullifier check on-chain is the real anti-replay; this is just storage hygiene.
-func (s *IndexerService) pruneKeeperShares(commitmentHash string) {
-	if s.keeperURL == "" {
+func (s *IndexerService) pruneEnclavePackage(commitmentHash string) {
+	if s.Enclave == nil {
 		return
 	}
-	url := strings.TrimRight(s.keeperURL, "/") + "/api/shares/" + commitmentHash
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
-	if err != nil {
-		log.Printf("[Indexer] build prune request: %v", err)
-		return
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Enclave.Prune(ctx, commitmentHash); err != nil {
+		log.Printf("[Indexer] prune enclave package for %s...: %v", commitmentHash[:10], err)
 	}
-	if s.keeperAPISecret != "" {
-		req.Header.Set("Authorization", "Bearer "+s.keeperAPISecret)
-	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		log.Printf("[Indexer] prune shares for %s...: %v", commitmentHash[:10], err)
-		return
-	}
-	resp.Body.Close()
+}
+
+func (s *IndexerService) pruneFinalized(commitmentHash string) {
+	s.pruneEnclavePackage(commitmentHash)
 }
 
 func (s *IndexerService) HandleRegistered(ctx context.Context, commitmentHash, kind string, chainID int64, blockTime time.Time) error {
@@ -107,7 +91,7 @@ func (s *IndexerService) HandleExecuted(ctx context.Context, commitmentHash, txH
 		s.Monitor.StopMonitoring(commitmentHash)
 		s.Monitor.UpdateStatus(ctx, commitmentHash, domain.IntentDone)
 	}
-	go s.pruneKeeperShares(commitmentHash)
+	go s.pruneFinalized(commitmentHash)
 	if err := s.repo.UpdateStatus(ctx, commitmentHash, domain.StatusExecuted, txHash, blockNumber, gasUsed, &blockTime); err != nil {
 		return err
 	}
@@ -142,7 +126,7 @@ func (s *IndexerService) HandleCancelled(ctx context.Context, commitmentHash, tx
 		s.Monitor.StopMonitoring(commitmentHash)
 		s.Monitor.UpdateStatus(ctx, commitmentHash, domain.IntentDone)
 	}
-	go s.pruneKeeperShares(commitmentHash)
+	go s.pruneFinalized(commitmentHash)
 	return s.repo.UpdateStatus(ctx, commitmentHash, domain.StatusCancelled, txHash, blockNumber, 0, nil)
 }
 
@@ -154,7 +138,7 @@ func (s *IndexerService) HandleExpired(ctx context.Context, commitmentHash strin
 		s.Monitor.StopMonitoring(commitmentHash)
 		s.Monitor.UpdateStatus(ctx, commitmentHash, domain.IntentDone)
 	}
-	go s.pruneKeeperShares(commitmentHash)
+	go s.pruneFinalized(commitmentHash)
 	return s.repo.UpdateStatus(ctx, commitmentHash, domain.StatusExpired, "", blockNumber, 0, nil)
 }
 

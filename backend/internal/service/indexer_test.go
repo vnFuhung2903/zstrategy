@@ -73,20 +73,45 @@ type fakeIntentRepo struct {
 	byHash map[string]*domain.PendingIntent
 }
 
-func (r fakeIntentRepo) Save(context.Context, *domain.PendingIntent) error { return nil }
+func (r fakeIntentRepo) Save(context.Context, *domain.PendingIntent) error        { return nil }
+func (r fakeIntentRepo) SaveBatch(context.Context, []*domain.PendingIntent) error { return nil }
 func (r fakeIntentRepo) GetByHash(_ context.Context, commitmentHash string) (*domain.PendingIntent, error) {
 	return r.byHash[commitmentHash], nil
 }
 func (r fakeIntentRepo) UpdateStatus(context.Context, string, domain.IntentStatus) error {
 	return nil
 }
+func (r fakeIntentRepo) ClaimForEvaluation(context.Context, string) (bool, error) {
+	return false, nil
+}
+func (r fakeIntentRepo) StoreTicket(context.Context, string, string, time.Time) (bool, error) {
+	return false, nil
+}
+func (r fakeIntentRepo) ClaimTicketLease(context.Context, string, string, time.Time, time.Time) (bool, error) {
+	return false, nil
+}
+func (r fakeIntentRepo) MarkFailed(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+func (r fakeIntentRepo) ResetEvaluation(context.Context, string) (bool, error) {
+	return false, nil
+}
+func (r fakeIntentRepo) ResetTicket(context.Context, string, string) (bool, error) {
+	return false, nil
+}
 func (r fakeIntentRepo) ListPending(context.Context) ([]*domain.PendingIntent, error) {
+	return nil, nil
+}
+func (r fakeIntentRepo) ListTicketReady(context.Context) ([]*domain.PendingIntent, error) {
 	return nil, nil
 }
 func (r fakeIntentRepo) CountByStatus(context.Context, domain.IntentStatus) (int64, error) {
 	return 0, nil
 }
 func (r fakeIntentRepo) ResetStuckExecuting(context.Context, time.Duration) ([]*domain.PendingIntent, error) {
+	return nil, nil
+}
+func (r fakeIntentRepo) ResetExpiredTickets(context.Context, time.Time) ([]*domain.PendingIntent, error) {
 	return nil, nil
 }
 
@@ -97,7 +122,7 @@ func TestHandleRegisteredPreservesMarketKindFromPendingIntent(t *testing.T) {
 	intentRepo := fakeIntentRepo{byHash: map[string]*domain.PendingIntent{
 		hash: {CommitmentHash: hash, Kind: domain.KindMarket},
 	}}
-	svc := NewIndexerService(execRepo, intentRepo, "", "")
+	svc := NewIndexerService(execRepo, intentRepo)
 
 	if err := svc.HandleRegistered(ctx, hash, domain.OnChainKindOrderFill, 421614, time.Now()); err != nil {
 		t.Fatalf("HandleRegistered: %v", err)
@@ -113,7 +138,7 @@ func TestUpdateExecutionIntentKindUpgradesExistingMarketRecord(t *testing.T) {
 	hash := "0xrace"
 	execRepo := newFakeExecutionRepo()
 	execRepo.records[hash] = &domain.ExecutionRecord{CommitmentHash: hash, Kind: domain.KindLimit}
-	svc := NewIndexerService(execRepo, nil, "", "")
+	svc := NewIndexerService(execRepo, nil)
 
 	if err := svc.UpdateExecutionIntentKind(ctx, hash, domain.KindMarket); err != nil {
 		t.Fatalf("UpdateExecutionIntentKind: %v", err)
@@ -127,7 +152,7 @@ func TestUpdateExecutionIntentKindUpgradesExistingMarketRecord(t *testing.T) {
 func TestStatsServicePassesSafeExecutionFilters(t *testing.T) {
 	ctx := context.Background()
 	execRepo := newFakeExecutionRepo()
-	svc := NewStatsService(execRepo, nil, nil, "")
+	svc := NewStatsService(execRepo, nil)
 	filters := domain.ExecutionFilters{
 		Query:  "0xabc",
 		Status: domain.StatusExecuted,
