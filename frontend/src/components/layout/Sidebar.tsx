@@ -9,37 +9,23 @@ import {
   Repeat2,
   Activity,
   Settings,
+  Terminal,
   Zap,
   X,
   Menu,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
-import { useKeeperHealth } from "@/hooks/useBackendApi";
 
 const nav = [
   { href: "/dashboard", label: "Command Center", icon: LayoutDashboard },
   { href: "/orders",    label: "Order Builder",    icon: TrendingUp },
   { href: "/vault",     label: "Vault",            icon: Shield },
   { href: "/dca",       label: "DCA Pulse",        icon: Repeat2 },
+  { href: "/executor",  label: "Executor",         icon: Terminal },
   { href: "/activity",  label: "Activity",         icon: Activity },
   { href: "/settings",  label: "Settings",         icon: Settings },
 ];
-
-function KeeperStatus() {
-  const { data, isLoading, isError } = useKeeperHealth();
-  const online = !!data?.online && !isError;
-  const label = isLoading ? "Keeper…" : online ? "Keeper online" : "Keeper offline";
-  return (
-    <div className="flex items-center gap-2 px-3 py-2 rounded-sm bg-surface-container">
-      <span className={cn(
-        "w-1.5 h-1.5 rounded-full",
-        online ? "bg-primary-container animate-pulse" : "bg-error",
-      )} />
-      <span className="text-xs text-on-surface-variant">{label}</span>
-    </div>
-  );
-}
 
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
@@ -70,9 +56,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
         })}
       </nav>
 
-      <div className="p-3 border-t border-outline-variant/10">
-        <KeeperStatus />
-      </div>
+      <div className="p-3 border-t border-outline-variant/10" />
     </>
   );
 }
