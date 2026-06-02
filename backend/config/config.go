@@ -24,8 +24,8 @@ type Config struct {
 	RPCURL                    string
 	ChainID                   int64
 	CommitmentRegistryAddress string
-	KeeperURL                 string
-	KeeperAPISecret           string
+	EnclaveURL                string
+	EnclaveAPISecret          string
 	MetricsEnabled            bool
 }
 
@@ -44,8 +44,8 @@ func Load() (*Config, error) {
 		RPCURL:                    getEnv("RPC_URL", ""),
 		ChainID:                   chainID,
 		CommitmentRegistryAddress: getEnv("COMMITMENT_REGISTRY_ADDRESS", ""),
-		KeeperURL:                 getEnv("KEEPER_URL", "http://localhost:3001"),
-		KeeperAPISecret:           getEnv("KEEPER_API_SECRET", ""),
+		EnclaveURL:                getEnv("ENCLAVE_URL", "http://localhost:3002"),
+		EnclaveAPISecret:          getEnv("ENCLAVE_API_SECRET", ""),
 		MetricsEnabled:            getEnv("METRICS_ENABLED", "true") == "true",
 	}, nil
 }

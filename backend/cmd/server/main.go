@@ -52,8 +52,10 @@ func main() {
 	// ── Dependency wiring ─────────────────────────────────────────────────────
 	execRepo := repository.NewExecutionRepo(db)
 	intentRepo := repository.NewIntentRepo(db)
-	indexerSvc := service.NewIndexerService(execRepo, intentRepo, cfg.KeeperURL, cfg.KeeperAPISecret)
-	statsSvc := service.NewStatsService(execRepo, intentRepo, redisClient, cfg.KeeperURL)
+	indexerSvc := service.NewIndexerService(execRepo, intentRepo)
+	statsSvc := service.NewStatsService(execRepo, redisClient)
+	enclaveClient := service.NewHTTPEnclaveClient(cfg.EnclaveURL, cfg.EnclaveAPISecret)
+	indexerSvc.Enclave = enclaveClient
 
 	// ── Ethereum client (shared between indexer and monitor) ──────────────────
 	var ethClient *ethclient.Client
@@ -66,7 +68,7 @@ func main() {
 	}
 
 	// ── Monitor service ───────────────────────────────────────────────────────
-	monitorSvc := service.NewMonitorService(intentRepo, ethClient, cfg.CommitmentRegistryAddress, cfg.KeeperURL, cfg.KeeperAPISecret)
+	monitorSvc := service.NewMonitorService(intentRepo, ethClient, cfg.CommitmentRegistryAddress, enclaveClient)
 	indexerSvc.Monitor = monitorSvc
 
 	// ── Root context ──────────────────────────────────────────────────────────
@@ -91,7 +93,7 @@ func main() {
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	h := handler.NewHandler(statsSvc, indexerSvc, intentRepo, monitorSvc, cfg.KeeperURL, cfg.KeeperAPISecret)
+	h := handler.NewHandler(statsSvc, indexerSvc, intentRepo, monitorSvc, enclaveClient, cfg.CommitmentRegistryAddress)
 	router := handler.NewRouter(h, cfg.MetricsEnabled)
 
 	srv := &http.Server{
