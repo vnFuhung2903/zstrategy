@@ -3,8 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
 	"time"
 
 	"fmt"
@@ -15,20 +13,14 @@ import (
 const statsCacheTTL = 30 * time.Second
 
 type StatsService struct {
-	repo       domain.ExecutionRepository
-	intentRepo domain.IntentRepository
-	cache      *redis.Client
-	keeperURL  string
-	httpClient *http.Client
+	repo  domain.ExecutionRepository
+	cache *redis.Client
 }
 
-func NewStatsService(repo domain.ExecutionRepository, intentRepo domain.IntentRepository, cache *redis.Client, keeperURL string) *StatsService {
+func NewStatsService(repo domain.ExecutionRepository, cache *redis.Client) *StatsService {
 	return &StatsService{
-		repo:       repo,
-		intentRepo: intentRepo,
-		cache:      cache,
-		keeperURL:  keeperURL,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		repo:  repo,
+		cache: cache,
 	}
 }
 
@@ -58,41 +50,4 @@ func (s *StatsService) GetExecutions(ctx context.Context, chainID int64, filters
 		limit = 20
 	}
 	return s.repo.List(ctx, chainID, filters, limit, offset)
-}
-
-func (s *StatsService) GetKeeperHealth(ctx context.Context) (*domain.KeeperHealth, error) {
-	resp, err := s.httpClient.Get(s.keeperURL + "/api/health")
-	if err != nil {
-		return &domain.KeeperHealth{Online: false, LastSeenAt: time.Now()}, nil
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return &domain.KeeperHealth{Online: false, LastSeenAt: time.Now()}, nil
-	}
-
-	var raw struct {
-		Status        string `json:"status"`
-		ExecutedCount int    `json:"executedCount"`
-		FailedCount   int    `json:"failedCount"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return &domain.KeeperHealth{Online: false, LastSeenAt: time.Now()}, nil
-	}
-
-	monitored := 0
-	if s.intentRepo != nil {
-		if n, err := s.intentRepo.CountByStatus(ctx, domain.IntentPending); err == nil {
-			monitored = int(n)
-		}
-	}
-
-	return &domain.KeeperHealth{
-		Online:         raw.Status == "ok",
-		MonitoredCount: monitored,
-		ExecutedCount:  raw.ExecutedCount,
-		FailedCount:    raw.FailedCount,
-		LastSeenAt:     time.Now(),
-	}, nil
 }

@@ -1,9 +1,8 @@
 // Package metrics defines the Prometheus metrics exposed by the backend at
 // GET /metrics. Counters are zero-valued at process start; histograms have
-// buckets sized for the latencies we expect (sub-second for monitor evals,
-// seconds for keeper trigger round-trips).
+// buckets sized for the latencies we expect from monitor evaluations.
 //
-// All metric *names* are stable contract — Grafana dashboards reference them
+// All metric names are stable contracts: Grafana dashboards reference them
 // in infra/grafana/dashboards/zstrategy.json. Renaming or deleting a metric
 // is a breaking change.
 package metrics
@@ -42,16 +41,6 @@ var MonitorEvalDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Help:    "Duration of a single monitor tick evaluation, by kind.",
 	Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
 }, []string{"kind"})
-
-// KeeperTriggerTotal counts POST /api/execute results, labelled by outcome:
-//
-//   - accepted   – 202/200 from keeper
-//   - rejected   – keeper returned non-2xx (oracle re-verify failed etc.)
-//   - error      – HTTP layer error (timeout, DNS, refused)
-var KeeperTriggerTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-	Name: "zstrategy_keeper_trigger_total",
-	Help: "Outcomes of monitor → keeper POST /api/execute calls.",
-}, []string{"outcome"})
 
 // IndexerEventsTotal counts each event the chain indexer dispatches. Labels: event.
 var IndexerEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
