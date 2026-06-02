@@ -23,9 +23,15 @@ import {
   intentIdSigningMessage,
 } from "@/lib/commitment";
 import { saveDcaRounds, type DcaRoundRecord } from "@/lib/intentStore";
-import { splitAndEncryptSecret } from "@/lib/threshold";
-import { keeperApi } from "@/lib/keeperApi";
 import { backendApi, type PostDcaIntentBody } from "@/lib/backendApi";
+import {
+  createEncryptedWitnessPackage,
+  getVerifiedEnclaveAttestation,
+  type EncryptedWitnessPackage,
+  type PublicIntentMetadata,
+} from "@/lib/enclaveWitness";
+import { ADDRESSES } from "@/lib/contracts";
+import { arbitrumSepolia } from "wagmi/chains";
 
 // BUY:  spend quoteToken each round → accumulate baseToken  (classic DCA)
 // SELL: spend baseToken each round  → accumulate quoteToken (reverse DCA / de-risking)
@@ -122,8 +128,6 @@ export default function DcaPage() {
       const sharedNonce = getSharedNonce();
       const intentId    = deriveIntentId(address, sharedNonce);
 
-      const { keepers } = await keeperApi.listKeepers();
-
       const signature  = await signMessageAsync({ message: intentIdSigningMessage(intentId) });
       const userSecret = deriveUserSecret(signature);
 
@@ -150,7 +154,6 @@ export default function DcaPage() {
         nullifiers.push(dcaNullifierHash(userSecret, roundNonces[i]));
       }
 
-      const encryptedShares = await splitAndEncryptSecret(userSecret, keepers);
       const dcaGroupId      = intentId;
 
       const records: DcaRoundRecord[] = hashes.map((commitmentHash, i) => ({
@@ -171,6 +174,35 @@ export default function DcaPage() {
         createdAt:   currentNow,
       }));
 
+      const registryAddr =
+        ADDRESSES[chainId as keyof typeof ADDRESSES]?.commitmentRegistry
+        ?? ADDRESSES[arbitrumSepolia.id].commitmentRegistry;
+      const attestation = await getVerifiedEnclaveAttestation();
+      const witnessPackages: EncryptedWitnessPackage[] = await Promise.all(records.map((record): Promise<EncryptedWitnessPackage> => {
+        const metadata: PublicIntentMetadata = {
+          version: 1,
+          chainId,
+          registry: registryAddr,
+          commitmentHash: record.commitmentHash,
+          kind: "DCA",
+          tokenIn: tokenIn.address,
+          tokenOut: tokenOut.address,
+          size: record.size,
+          minOut: record.minOut,
+          expiry: record.expiry,
+        };
+        return createEncryptedWitnessPackage(metadata, {
+          kind: "DCA",
+          scheduledLo: record.scheduledLo,
+          scheduledHi: record.scheduledHi,
+          nonce: record.nonce,
+          userSecret,
+          nullifier: record.nullifier,
+          dcaGroupId,
+          roundIndex: record.roundIndex,
+        }, attestation);
+      }));
+
       await saveDcaRounds(records);
 
       setPostSynced(false);
@@ -178,17 +210,13 @@ export default function DcaPage() {
         chainId,
         tokenIn:  tokenIn.address,
         tokenOut: tokenOut.address,
-        encryptedShares,
-        rounds: records.map(r => ({
+        rounds: records.map((r, i) => ({
           commitmentHash: r.commitmentHash,
-          nonce:          r.nonce,
-          nullifier:      r.nullifier,
           size:           r.size,
           minOut:        "0",
-          scheduledLo:    r.scheduledLo,
-          scheduledHi:    r.scheduledHi,
           expiry:         r.expiry,
           roundIndex:     r.roundIndex,
+          witnessPackage: witnessPackages[i],
         })),
       });
 
@@ -362,7 +390,7 @@ export default function DcaPage() {
               {gasShortfall && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
                   <AlertCircle size={13} />
-                  Gas tank too low for {roundCount} keeper fills — top up on the Vault page before submitting.
+                  Gas tank too low for {roundCount} executor fills — top up on the Vault page before submitting.
                 </div>
               )}
 
@@ -402,7 +430,7 @@ export default function DcaPage() {
               <Info size={14} className="text-primary-container mt-0.5 shrink-0" />
               <p className="text-xs text-on-surface-variant leading-relaxed">
                 One wallet signature covers all rounds. Each round gets a unique nonce and private execution window.
-                The keeper cannot tell which window belongs to which round until it executes — your DCA schedule is never revealed on-chain.
+                Public executors only see execution tickets — your DCA schedule is never revealed on-chain.
               </p>
             </div>
           </div>

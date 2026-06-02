@@ -25,9 +25,8 @@ import {
   intentIdSigningMessage,
 } from "@/lib/commitment";
 import { saveIntent, type IntentKind } from "@/lib/intentStore";
-import { splitAndEncryptSecret } from "@/lib/threshold";
-import { keeperApi } from "@/lib/keeperApi";
 import { backendApi, type PostOrderIntentBody } from "@/lib/backendApi";
+import { createEncryptedWitnessPackage, type PublicIntentMetadata } from "@/lib/enclaveWitness";
 import { ADDRESSES, COMMITMENT_REGISTRY_ABI, PRICE_FEED_ABI } from "@/lib/contracts";
 import { arbitrumSepolia } from "wagmi/chains";
 
@@ -52,7 +51,7 @@ type Side = "BUY" | "SELL";
 const ORACLE_DECIMALS = 8;
 
 // Slippage tolerance options. 1% is the default — tighter than typical AMM
-// swaps because the keeper executes against current oracle, not pool spot.
+// swaps because execution is checked against current oracle, not pool spot.
 const SLIPPAGE_OPTIONS = [0.5, 1, 2, 5] as const;
 type SlippagePct = typeof SLIPPAGE_OPTIONS[number];
 
@@ -119,8 +118,8 @@ export default function OrdersPage() {
   const { register, isPending, isConfirming, isSuccess, error } = useRegisterCommitment();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
 
-  // Keeper-gas precondition. We require ≥ 1 estimated fill in the tank before
-  // accepting a new intent — otherwise the keeper trigger will revert on
+  // Executor-gas precondition. We require >= 1 estimated fill in the tank before
+  // accepting a new intent — otherwise public execution will revert on
   // executeCommitment and the intent will sit PENDING until the user funds.
   // (One commitment ⇒ one fill ⇒ one PER_EXECUTION_ETH_ESTIMATE.)
   // Treat the pre-query "undefined" state as a shortfall so a fast clicker
@@ -145,8 +144,8 @@ export default function OrdersPage() {
 
   // The price the order is *committed* to. For LIMIT, this is the user's
   // target. For MARKET, it's a sentinel that makes the circuit's fill check
-  // trivially pass — the contract still verifies the proof, but the keeper's
-  // re-verify against live oracle will pass for any reasonable oracle reading.
+  // trivially pass — the contract still verifies the proof, but the prover's
+  // live-oracle check will pass for any reasonable oracle reading.
   const priceBig = useMemo(() => {
     if (kind === "MARKET") {
       return direction === DIRECTION_BUY ? MARKET_PRICE_BUY : MARKET_PRICE_SELL;
@@ -290,12 +289,7 @@ export default function OrdersPage() {
       const nonce = getDraftNonce();
       const intentId = deriveIntentId(address, nonce);
 
-      // 1. Fetch keeper public-key set BEFORE asking the user to sign — if the
-      //    keeper network is unreachable we want to fail fast and not waste a
-      //    wallet prompt.
-      const { keepers } = await keeperApi.listKeepers();
-
-      // 2. Wallet signs intentId — deterministic, recoverable secret bound
+      // 1. Wallet signs intentId — deterministic, recoverable secret bound
       //    to this wallet. Same prompt on cancel/self-execute regenerates it.
       const signature = await signMessageAsync({
         message: intentIdSigningMessage(intentId),
@@ -315,12 +309,31 @@ export default function OrdersPage() {
         userSecret,
       });
 
-      // 3. Shamir-split user_secret into N encrypted shares — one per keeper.
-      //    No single keeper sees the secret in storage; reconstruction
-      //    requires k of N to cooperate at fill time.
-      const encryptedShares = await splitAndEncryptSecret(userSecret, keepers);
+      const registryAddr =
+        ADDRESSES[chainId as keyof typeof ADDRESSES]?.commitmentRegistry
+        ?? ADDRESSES[arbitrumSepolia.id].commitmentRegistry;
+      const publicMetadata: PublicIntentMetadata = {
+        version: 1,
+        chainId,
+        registry: registryAddr,
+        commitmentHash,
+        kind: "ORDER_FILL",
+        tokenIn: tokenIn.address,
+        tokenOut: tokenOut.address,
+        size: amountBig.toString(),
+        minOut: minOutBig.toString(),
+        expiry,
+      };
+      const witnessPackage = await createEncryptedWitnessPackage(publicMetadata, {
+        kind: "ORDER_FILL",
+        price: priceBig.toString(),
+        direction,
+        nonce,
+        userSecret,
+        nullifier,
+      });
 
-      // 4. Persist intent metadata locally BEFORE any network/on-chain side
+      // 2. Persist intent metadata locally BEFORE any network/on-chain side
       //    effect. If subsequent steps fail, the user can recover from
       //    IndexedDB and retry. user_secret is NOT persisted — it's recoverable
       //    from the wallet signature on intentId.
@@ -340,12 +353,12 @@ export default function OrdersPage() {
         createdAt:  Math.floor(Date.now() / 1000),
       });
 
-      // 5. Stash the keeper-bound payload — we POST it only AFTER the on-chain
+      // 3. Stash the encrypted witness package — we POST it only AFTER the on-chain
       //    tx confirms (see the useEffect below). Posting earlier races the
-      //    keeper's on-chain status check and yields a 422.
+      //    scheduler's on-chain status check and yields a 422.
       //
-      // Backend stores user-facing intent kind. On-chain and on the keeper
-      // wire, LIMIT and MARKET both use kind=0 (ORDER_FILL); MARKET uses a
+      // Backend stores user-facing intent kind. On-chain LIMIT and MARKET
+      // both use kind=0 (ORDER_FILL); MARKET uses a
       // sentinel price that makes the fill check pass.
       const isMarketOrder = kind === "MARKET";
       setPostSynced(false);
@@ -362,15 +375,11 @@ export default function OrdersPage() {
         size:       amountBig.toString(),
         minOut:     minOutBig.toString(),
         expiry,
-        limitPrice: priceBig.toString(),
-        direction,
-        nonce,
-        nullifier,
-        encryptedShares,
+        witnessPackage,
       });
 
-      // 6. On-chain registration. msg.sender = wallet, so cancel + self-execute
-      //    paths work without keeper involvement.
+      // 4. On-chain registration. msg.sender = wallet, so cancel and local
+      //    recovery paths stay wallet-controlled.
       register(commitmentHash, tokenIn.address, tokenOut.address, amountBig, minOutBig, expiry, 0, {
         successToastEnabled: !isMarketOrder,
       });
@@ -386,8 +395,8 @@ export default function OrdersPage() {
     }
   }
 
-  // Once the on-chain tx confirms, hand the encrypted shares + metadata to the
-  // keeper network. Failures here leave the on-chain commitment intact (the
+  // Once the on-chain tx confirms, hand the encrypted witness package to the
+  // backend scheduler. Failures here leave the on-chain commitment intact (the
   // user can retry sync later); funds are never stuck because the chain is the
   // authoritative source.
   useEffect(() => {
@@ -396,7 +405,11 @@ export default function OrdersPage() {
     backendSyncHashRef.current = pendingPost.commitmentHash;
 
     let cancelled = false;
-    if (pendingPost.kind === "MARKET") setMarketIntentPhase("syncing");
+    if (pendingPost.kind === "MARKET") {
+      queueMicrotask(() => {
+        if (!cancelled) setMarketIntentPhase("syncing");
+      });
+    }
 
     backendApi.postOrderIntent(pendingPost)
       .then(() => {
@@ -637,7 +650,7 @@ export default function OrdersPage() {
                   <p className="text-xs text-secondary uppercase tracking-widest mb-1">Cryptographic Commitment</p>
                   <h2 className="font-display text-xl md:text-2xl font-semibold text-on-surface">ZK Proof Enclave</h2>
                   <p className="text-sm text-on-surface-variant mt-1">
-                    Your order parameters are encrypted locally. The keeper only sees a commitment hash.
+                    Your order parameters are encrypted locally. Public executors only see execution tickets.
                   </p>
                 </div>
                 <Badge variant="sovereign" dot className="shrink-0">ZKP Active</Badge>
@@ -659,7 +672,7 @@ export default function OrdersPage() {
               {gasShortfall && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
                   <AlertCircle size={13} />
-                  Gas tank too low for keeper reimbursement — top up on the Vault page before submitting.
+                  Gas tank too low for executor reimbursement — top up on the Vault page before submitting.
                 </div>
               )}
 
@@ -680,7 +693,7 @@ export default function OrdersPage() {
                     : effectiveMarketIntentPhase === "error"
                       ? "Market intent sync failed. See error above."
                       : effectiveMarketIntentPhase === "syncing"
-                      ? "Registration confirmed. Syncing encrypted witness shares..."
+                      ? "Registration confirmed. Syncing encrypted witness package..."
                       : isSuccess
                         ? "Registration confirmed. Syncing intent payload..."
                         : "Registering market intent commitment..."
