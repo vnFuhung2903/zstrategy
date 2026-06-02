@@ -1,13 +1,13 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
-	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,80 +20,61 @@ import (
 	"github.com/zstrategy/backend/internal/infrastructure/metrics"
 )
 
-// registryPriceFeedABI exposes CommitmentRegistry.priceFeeds(address) → address.
-const registryPriceFeedABI = `[{"name":"priceFeeds","type":"function","inputs":[{"name":"token","type":"address"}],"outputs":[{"name":"","type":"address"}]}]`
+const registryReadABI = `[
+  {"name":"priceFeeds","type":"function","inputs":[{"name":"token","type":"address"}],"outputs":[{"name":"","type":"address"}]},
+  {"name":"getCommitmentStatus","type":"function","inputs":[{"name":"commitmentHash","type":"bytes32"}],"outputs":[{"name":"","type":"uint8"}]},
+  {"name":"executeCommitment","type":"function","inputs":[{"name":"commitmentHash","type":"bytes32"},{"name":"nullifier","type":"bytes32"},{"name":"proof","type":"bytes"},{"name":"fillRef","type":"uint64"}],"outputs":[]}
+]`
 
-// chainlinkAggregatorABI covers latestRoundData() and decimals() on any Chainlink feed.
 const chainlinkAggregatorABI = `[
   {"name":"latestRoundData","type":"function","inputs":[],"outputs":[{"name":"roundId","type":"uint80"},{"name":"answer","type":"int256"},{"name":"startedAt","type":"uint256"},{"name":"updatedAt","type":"uint256"},{"name":"answeredInRound","type":"uint80"}]},
   {"name":"decimals","type":"function","inputs":[],"outputs":[{"name":"","type":"uint8"}]}
 ]`
 
 const (
-	monitorTickInterval = 30 * time.Second
-	// Stuck-EXECUTING sweeper: any row sitting in EXECUTING longer than this is
-	// presumed orphaned (keeper crashed mid-flight or trigger was never accepted)
-	// and gets reset to PENDING. The chain indexer is authoritative for genuine
-	// completion (it flips status to DONE on CommitmentExecuted), so a duplicate
-	// trigger after reset is harmless — the on-chain nullifier check rejects it.
+	monitorTickInterval     = 30 * time.Second
 	stuckExecutingThreshold = 10 * time.Minute
 	stuckSweepInterval      = 5 * time.Minute
+	commitmentStatusPending = uint8(1)
+	claimSimulationGasPrice = int64(1_000_000_000)
 )
 
-// executeRequest mirrors the JSON body sent to keeper POST /api/execute.
-type executeRequest struct {
-	CommitmentHash string `json:"commitmentHash"`
-	Kind           string `json:"kind"`
-	TokenIn        string `json:"tokenIn"`
-	TokenOut       string `json:"tokenOut"`
-	Size           string `json:"size"`
-	MinOut         string `json:"minOut"`
-	Expiry         int64  `json:"expiry"`
-	LimitPrice     string `json:"limitPrice"`
-	Direction      int    `json:"direction"`
-	Nonce          string `json:"nonce"`
-	Nullifier      string `json:"nullifier"`
-	ScheduledLo    *int64 `json:"scheduledLo"`
-	ScheduledHi    *int64 `json:"scheduledHi"`
-}
-
-// trackedMonitor pairs a goroutine's cancel func with the intent kind so we
-// can decrement the right Prometheus gauge label when monitoring stops.
 type trackedMonitor struct {
 	cancel context.CancelFunc
 	kind   domain.IntentKind
 }
 
 type MonitorService struct {
-	repo            domain.IntentRepository
-	ethClient       *ethclient.Client
-	registryAddr    common.Address
-	hasRegistry     bool
-	regABI          abi.ABI // priceFeeds(address)
-	feedABI         abi.ABI // latestRoundData() + decimals()
-	keeperURL       string
-	keeperAPISecret string
-	httpClient      *http.Client
+	repo         domain.IntentRepository
+	ethClient    *ethclient.Client
+	registryAddr common.Address
+	hasRegistry  bool
+	regABI       abi.ABI
+	feedABI      abi.ABI
+	enclave      EnclaveClient
+
+	fetchPairPriceFn     func(context.Context, string, string) (*big.Int, error)
+	isOnChainPendingFn   func(context.Context, string) (bool, error)
+	latestBlockContextFn func(context.Context, int64) (string, int64, error)
 
 	mu        sync.Mutex
 	stopChans map[string]trackedMonitor
+	rootCtx   context.Context
+}
 
-	// rootCtx is the long-lived context goroutines should be derived from. It
-	// is set by RehydrateFromDB at startup. Per-request contexts (e.g. from a
-	// gin handler) cancel when the response is written and would prematurely
-	// kill the monitor goroutine, so we ignore caller ctx for goroutine
-	// lifetime purposes once rootCtx is set.
-	rootCtx context.Context
+type TicketClaimCheck struct {
+	Executable        bool
+	CommitmentPending bool
+	Reason            string
 }
 
 func NewMonitorService(
 	repo domain.IntentRepository,
 	ethClient *ethclient.Client,
 	registryAddress string,
-	keeperURL string,
-	keeperAPISecret string,
+	enclave EnclaveClient,
 ) *MonitorService {
-	regABI, _ := abi.JSON(strings.NewReader(registryPriceFeedABI))
+	regABI, _ := abi.JSON(strings.NewReader(registryReadABI))
 	feedABI, _ := abi.JSON(strings.NewReader(chainlinkAggregatorABI))
 
 	hasRegistry := registryAddress != "" && ethClient != nil
@@ -102,36 +83,38 @@ func NewMonitorService(
 		addr = common.HexToAddress(registryAddress)
 	}
 	if !hasRegistry {
-		log.Println("[Monitor] COMMITMENT_REGISTRY_ADDRESS not configured — LIMIT intent monitoring disabled")
+		log.Println("[Monitor] COMMITMENT_REGISTRY_ADDRESS or RPC_URL not configured; scheduler will not publish tickets")
 	}
-	return &MonitorService{
-		repo:            repo,
-		ethClient:       ethClient,
-		registryAddr:    addr,
-		hasRegistry:     hasRegistry,
-		regABI:          regABI,
-		feedABI:         feedABI,
-		keeperURL:       keeperURL,
-		keeperAPISecret: keeperAPISecret,
-		httpClient:      &http.Client{Timeout: 10 * time.Second},
-		stopChans:       make(map[string]trackedMonitor),
+
+	m := &MonitorService{
+		repo:         repo,
+		ethClient:    ethClient,
+		registryAddr: addr,
+		hasRegistry:  hasRegistry,
+		regABI:       regABI,
+		feedABI:      feedABI,
+		enclave:      enclave,
+		stopChans:    make(map[string]trackedMonitor),
 	}
+	m.fetchPairPriceFn = m.fetchPairPrice
+	m.isOnChainPendingFn = m.isCommitmentPendingOnChain
+	m.latestBlockContextFn = m.latestBlockContext
+	return m
 }
 
-// RehydrateFromDB restarts monitoring goroutines for all PENDING intents
-// on backend startup. It first resets any rows still in EXECUTING (orphaned by
-// a previous crash mid-flight) back to PENDING so they are picked up too. The
-// passed context is also captured as the long-lived root for goroutines
-// spawned by later HTTP-triggered StartMonitoring calls.
 func (m *MonitorService) RehydrateFromDB(ctx context.Context) {
 	m.rootCtx = ctx
-	// Reset all stuck EXECUTING rows on startup (olderThan=0 means reset all).
-	// On a fresh boot, anything still EXECUTING means a previous keeper/backend
-	// crashed before the chain indexer flipped it to DONE.
+
 	if reset, err := m.repo.ResetStuckExecuting(ctx, 0); err != nil {
 		log.Printf("[Monitor] reset stuck on rehydrate: %v", err)
 	} else if len(reset) > 0 {
-		log.Printf("[Monitor] reset %d orphaned EXECUTING rows to PENDING", len(reset))
+		log.Printf("[Monitor] reset %d orphaned EVALUATING rows to PENDING", len(reset))
+	}
+
+	if reset, err := m.repo.ResetExpiredTickets(ctx, time.Now()); err != nil {
+		log.Printf("[Monitor] reset expired tickets on rehydrate: %v", err)
+	} else if len(reset) > 0 {
+		log.Printf("[Monitor] reset %d expired tickets to PENDING", len(reset))
 	}
 
 	intents, err := m.repo.ListPending(ctx)
@@ -145,9 +128,6 @@ func (m *MonitorService) RehydrateFromDB(ctx context.Context) {
 	log.Printf("[Monitor] rehydrated %d pending intents", len(intents))
 }
 
-// StartStuckSweeper runs a periodic sweeper that resets EXECUTING rows older
-// than `stuckExecutingThreshold` back to PENDING, then re-monitors them. Call
-// once after RehydrateFromDB; the goroutine exits when ctx is cancelled.
 func (m *MonitorService) StartStuckSweeper(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(stuckSweepInterval)
@@ -157,33 +137,39 @@ func (m *MonitorService) StartStuckSweeper(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				m.sweepStuckExecuting(ctx)
+				m.sweepRetryable(ctx)
 			}
 		}
 	}()
 }
 
-func (m *MonitorService) sweepStuckExecuting(ctx context.Context) {
+func (m *MonitorService) sweepRetryable(ctx context.Context) {
 	reset, err := m.repo.ResetStuckExecuting(ctx, stuckExecutingThreshold)
 	if err != nil {
-		log.Printf("[Monitor] sweep stuck executing: %v", err)
+		log.Printf("[Monitor] sweep stuck evaluating: %v", err)
 		return
 	}
+	expiredTickets, err := m.repo.ResetExpiredTickets(ctx, time.Now())
+	if err != nil {
+		log.Printf("[Monitor] sweep expired tickets: %v", err)
+		return
+	}
+
+	reset = append(reset, expiredTickets...)
 	if len(reset) == 0 {
 		return
 	}
-	log.Printf("[Monitor] sweep reset %d stuck EXECUTING rows; resuming monitoring", len(reset))
+	log.Printf("[Monitor] resumed %d retryable intents", len(reset))
 	for _, s := range reset {
+		m.StopMonitoring(s.CommitmentHash)
 		m.startMonitoring(ctx, s)
 	}
 }
 
-// StartMonitoring begins fill-condition polling for an intent.
 func (m *MonitorService) StartMonitoring(ctx context.Context, s *domain.PendingIntent) {
 	m.startMonitoring(ctx, s)
 }
 
-// StopMonitoring stops the goroutine for a given commitment hash.
 func (m *MonitorService) StopMonitoring(commitmentHash string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -194,12 +180,11 @@ func (m *MonitorService) StopMonitoring(commitmentHash string) {
 	}
 }
 
-// UpdateStatus updates an intent's status in the DB and stops monitoring if done.
 func (m *MonitorService) UpdateStatus(ctx context.Context, commitmentHash string, status domain.IntentStatus) {
 	if err := m.repo.UpdateStatus(ctx, commitmentHash, status); err != nil {
-		log.Printf("[Monitor] UpdateStatus %s: %v", commitmentHash[:10], err)
+		log.Printf("[Monitor] UpdateStatus %s: %v", shortHash(commitmentHash), err)
 	}
-	if status == domain.IntentDone {
+	if status == domain.IntentDone || status == domain.IntentFailed {
 		m.StopMonitoring(commitmentHash)
 	}
 }
@@ -209,11 +194,9 @@ func (m *MonitorService) startMonitoring(ctx context.Context, s *domain.PendingI
 	defer m.mu.Unlock()
 
 	if _, exists := m.stopChans[s.CommitmentHash]; exists {
-		return // already watching
+		return
 	}
 
-	// Goroutine lifetime must follow the long-lived root context, not the
-	// caller's (which may be a gin request context that cancels immediately).
 	parent := m.rootCtx
 	if parent == nil {
 		parent = ctx
@@ -229,98 +212,390 @@ func (m *MonitorService) monitorLoop(ctx context.Context, s *domain.PendingInten
 	ticker := time.NewTicker(monitorTickInterval)
 	defer ticker.Stop()
 
-	short := s.CommitmentHash
-	if len(short) > 10 {
-		short = short[:10]
-	}
-
-	log.Printf("[Monitor] started goroutine for %s... (kind=%s)", short, s.Kind)
-
-	// Evaluate immediately on start, then on each tick.
-	m.evaluateAndMaybeTrigger(ctx, s)
+	log.Printf("[Monitor] started scheduler for %s... (kind=%s)", shortHash(s.CommitmentHash), s.Kind)
+	m.evaluateAndMaybeTicket(ctx, s)
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[Monitor] stopped goroutine for %s...", short)
+			log.Printf("[Monitor] stopped scheduler for %s...", shortHash(s.CommitmentHash))
 			return
 		case <-ticker.C:
-			m.evaluateAndMaybeTrigger(ctx, s)
+			m.evaluateAndMaybeTicket(ctx, s)
 		}
 	}
 }
 
-func (m *MonitorService) evaluateAndMaybeTrigger(ctx context.Context, s *domain.PendingIntent) {
+func (m *MonitorService) evaluateAndMaybeTicket(ctx context.Context, s *domain.PendingIntent) {
 	evalStart := time.Now()
 	defer func() {
 		metrics.MonitorEvalDuration.WithLabelValues(string(s.Kind)).Observe(time.Since(evalStart).Seconds())
 	}()
+
+	if ctx.Err() != nil {
+		return
+	}
+
 	now := time.Now().Unix()
-
-	// Check expiry.
 	if s.Expiry > 0 && now > s.Expiry {
-		log.Printf("[Monitor] %s... expired — stopping", s.CommitmentHash[:10])
+		log.Printf("[Monitor] %s... expired locally; waiting for on-chain sweep event", shortHash(s.CommitmentHash))
 		m.UpdateStatus(ctx, s.CommitmentHash, domain.IntentDone)
+		_ = m.pruneEnclave(ctx, s.CommitmentHash)
 		return
 	}
 
-	met, err := m.isFillConditionMet(ctx, s, now)
+	if m.enclave == nil {
+		log.Printf("[Monitor] enclave client not configured for %s...", shortHash(s.CommitmentHash))
+		return
+	}
+
+	pending, err := m.isOnChainPendingFn(ctx, s.CommitmentHash)
+	if ctx.Err() != nil {
+		return
+	}
 	if err != nil {
-		log.Printf("[Monitor] condition check error for %s...: %v", s.CommitmentHash[:10], err)
+		log.Printf("[Monitor] on-chain status check failed for %s...: %v", shortHash(s.CommitmentHash), err)
 		return
 	}
-	if !met {
+	if !pending {
+		log.Printf("[Monitor] %s... is no longer on-chain pending; pruning package", shortHash(s.CommitmentHash))
+		m.UpdateStatus(ctx, s.CommitmentHash, domain.IntentDone)
+		_ = m.pruneEnclave(ctx, s.CommitmentHash)
 		return
 	}
 
-	log.Printf("[Monitor] fill condition MET for %s... — triggering keeper", s.CommitmentHash[:10])
-
-	// Mark EXECUTING before firing so concurrent ticks don't re-trigger.
-	if err := m.repo.UpdateStatus(ctx, s.CommitmentHash, domain.IntentExecuting); err != nil {
-		log.Printf("[Monitor] UpdateStatus EXECUTING %s...: %v", s.CommitmentHash[:10], err)
+	claimed, err := m.repo.ClaimForEvaluation(ctx, s.CommitmentHash)
+	if err != nil {
+		log.Printf("[Monitor] claim evaluation %s...: %v", shortHash(s.CommitmentHash), err)
 		return
 	}
+	if !claimed {
+		return
+	}
+
+	pkg, err := decodeStoredPackage(s)
+	if err != nil {
+		log.Printf("[Monitor] invalid stored package for %s...: %v", shortHash(s.CommitmentHash), err)
+		m.markEvaluationFailed(ctx, s.CommitmentHash, err.Error())
+		m.StopMonitoring(s.CommitmentHash)
+		return
+	}
+
+	if err := m.enclave.ImportPackage(ctx, pkg); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("[Monitor] enclave rejected package for %s...: %v", shortHash(s.CommitmentHash), err)
+		if isPermanentEnclaveImportError(err) {
+			m.markEvaluationFailed(ctx, s.CommitmentHash, err.Error())
+			m.StopMonitoring(s.CommitmentHash)
+			return
+		}
+		m.resetToPending(ctx, s)
+		return
+	}
+
+	fillCtx, err := m.buildFillContext(ctx, s, pkg, now)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		log.Printf("[Monitor] fill context unavailable for %s...: %v", shortHash(s.CommitmentHash), err)
+		m.resetToPending(ctx, s)
+		return
+	}
+
+	ticket, ready, err := m.enclave.Evaluate(ctx, s.CommitmentHash, fillCtx)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		log.Printf("[Monitor] enclave evaluate failed for %s...: %v", shortHash(s.CommitmentHash), err)
+		m.resetToPending(ctx, s)
+		return
+	}
+	if !ready {
+		m.resetToPending(ctx, s)
+		return
+	}
+	if err := validateExecutionTicket(s, pkg, fillCtx, ticket, time.Now()); err != nil {
+		log.Printf("[Monitor] invalid ticket for %s...: %v", shortHash(s.CommitmentHash), err)
+		if errors.Is(err, errTicketExpired) {
+			m.resetToPending(ctx, s)
+			return
+		}
+		m.markEvaluationFailed(ctx, s.CommitmentHash, err.Error())
+		m.StopMonitoring(s.CommitmentHash)
+		return
+	}
+
+	stillPending, err := m.isOnChainPendingFn(ctx, s.CommitmentHash)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		log.Printf("[Monitor] post-proof status check failed for %s...: %v", shortHash(s.CommitmentHash), err)
+		m.resetToPending(ctx, s)
+		return
+	}
+	if !stillPending {
+		log.Printf("[Monitor] discarding ticket for finalized %s...", shortHash(s.CommitmentHash))
+		m.UpdateStatus(ctx, s.CommitmentHash, domain.IntentDone)
+		_ = m.pruneEnclave(ctx, s.CommitmentHash)
+		return
+	}
+
+	ticketJSON, err := domain.StableJSON(ticket)
+	if err != nil {
+		log.Printf("[Monitor] marshal ticket %s...: %v", shortHash(s.CommitmentHash), err)
+		m.resetToPending(ctx, s)
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+
+	expiresAt := time.Unix(ticket.TicketExpiresAt, 0)
+	stored, err := m.repo.StoreTicket(ctx, s.CommitmentHash, ticketJSON, expiresAt)
+	if err != nil {
+		log.Printf("[Monitor] store ticket %s...: %v", shortHash(s.CommitmentHash), err)
+		m.resetToPending(ctx, s)
+		return
+	}
+	if !stored {
+		log.Printf("[Monitor] ticket not stored for %s... because status changed during evaluation", shortHash(s.CommitmentHash))
+		m.StopMonitoring(s.CommitmentHash)
+		return
+	}
+
+	log.Printf("[Monitor] execution ticket ready for %s... (expires=%s)", shortHash(s.CommitmentHash), expiresAt.UTC().Format(time.RFC3339))
 	m.StopMonitoring(s.CommitmentHash)
-
-	go m.triggerKeeper(s)
 }
 
-func (m *MonitorService) isFillConditionMet(ctx context.Context, s *domain.PendingIntent, now int64) (bool, error) {
-	if s.Kind == domain.KindMarket {
-		// MARKET: fires on first goroutine tick. No oracle poll, no time window —
-		// the on-chain commitment uses a sentinel limit price (u64.max for BUY,
-		// 0 for SELL) that trivially satisfies the circuit's fill check; the
-		// keeper still does its own oracle re-verify and will see the same
-		// trivial pass.
-		return true, nil
-	}
-	if s.Kind == domain.KindDCA {
-		if s.ScheduledLo == nil || s.ScheduledHi == nil {
-			return false, nil
-		}
-		return now >= *s.ScheduledLo && now <= *s.ScheduledHi, nil
-	}
-
-	// LIMIT: derive pair price from two registry-registered Chainlink feeds.
-	if !m.hasRegistry {
-		return false, nil
-	}
-
-	oraclePrice, err := m.fetchPairPrice(ctx, s.TokenIn, s.TokenOut)
+func (m *MonitorService) buildFillContext(ctx context.Context, s *domain.PendingIntent, pkg domain.EncryptedWitnessPackage, now int64) (domain.FillContext, error) {
+	blockNumber, blockTimestamp, err := m.latestBlockContextFn(ctx, now)
 	if err != nil {
-		return false, fmt.Errorf("pair price: %w", err)
+		return domain.FillContext{}, err
 	}
 
-	limitPrice := new(big.Int)
-	if _, ok := limitPrice.SetString(s.LimitPrice, 10); !ok {
-		return false, fmt.Errorf("invalid limit_price: %s", s.LimitPrice)
+	fillCtx := domain.FillContext{
+		ChainID:        s.ChainID,
+		Registry:       s.Registry,
+		BlockNumber:    blockNumber,
+		BlockTimestamp: blockTimestamp,
 	}
 
-	// direction: 0 = BUY (fill when oracle <= limit), 1 = SELL (fill when oracle >= limit)
-	if s.Direction == 1 {
-		return oraclePrice.Cmp(limitPrice) >= 0, nil
+	if pkg.Kind == domain.CircuitKindOrderFill {
+		oraclePrice, err := m.fetchPairPriceFn(ctx, s.TokenIn, s.TokenOut)
+		if err != nil {
+			return domain.FillContext{}, fmt.Errorf("pair price: %w", err)
+		}
+		fillCtx.OraclePrice = oraclePrice.String()
 	}
-	return oraclePrice.Cmp(limitPrice) <= 0, nil
+
+	return fillCtx, nil
+}
+
+func decodeStoredPackage(s *domain.PendingIntent) (domain.EncryptedWitnessPackage, error) {
+	var pkg domain.EncryptedWitnessPackage
+	if err := json.Unmarshal([]byte(s.WitnessPackage), &pkg); err != nil {
+		return pkg, fmt.Errorf("decode witness package: %w", err)
+	}
+	if err := domain.ValidateEncryptedWitnessPackage(pkg); err != nil {
+		return pkg, err
+	}
+	if !strings.EqualFold(pkg.CommitmentHash, s.CommitmentHash) ||
+		pkg.AAD.ChainID != s.ChainID ||
+		!strings.EqualFold(pkg.AAD.Registry, s.Registry) ||
+		!strings.EqualFold(pkg.AAD.TokenIn, s.TokenIn) ||
+		!strings.EqualFold(pkg.AAD.TokenOut, s.TokenOut) ||
+		pkg.AAD.Size != s.Size ||
+		pkg.AAD.MinOut != s.MinOut ||
+		pkg.AAD.Expiry != s.Expiry {
+		return pkg, fmt.Errorf("witness package AAD does not match pending intent metadata")
+	}
+	return pkg, nil
+}
+
+var errTicketExpired = errors.New("execution ticket already expired")
+
+func validateExecutionTicket(
+	s *domain.PendingIntent,
+	pkg domain.EncryptedWitnessPackage,
+	fillCtx domain.FillContext,
+	ticket *domain.ExecutionTicket,
+	now time.Time,
+) error {
+	if ticket == nil {
+		return fmt.Errorf("missing ticket")
+	}
+	if ticket.Version != 1 {
+		return fmt.Errorf("unsupported ticket version")
+	}
+	if ticket.ChainID != s.ChainID ||
+		!strings.EqualFold(ticket.Registry, s.Registry) ||
+		!strings.EqualFold(ticket.CommitmentHash, s.CommitmentHash) ||
+		ticket.Kind != pkg.Kind ||
+		!strings.EqualFold(ticket.PackageHash, pkg.PackageHash) {
+		return fmt.Errorf("ticket public metadata does not match pending intent")
+	}
+	if ticket.Proof == "" || ticket.Nullifier == "" {
+		return fmt.Errorf("ticket missing proof or nullifier")
+	}
+	if ticket.TicketExpiresAt <= now.Unix() {
+		return errTicketExpired
+	}
+	if pkg.Kind == domain.CircuitKindOrderFill {
+		if ticket.FillRef != "0" {
+			return fmt.Errorf("ORDER_FILL ticket must use fillRef 0")
+		}
+		return nil
+	}
+	fillRef, err := strconv.ParseInt(ticket.FillRef, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid DCA fillRef")
+	}
+	if fillRef != fillCtx.BlockTimestamp {
+		return fmt.Errorf("DCA ticket fillRef does not match evaluated block timestamp")
+	}
+	return nil
+}
+
+func (m *MonitorService) resetToPending(ctx context.Context, s *domain.PendingIntent) {
+	reset, err := m.repo.ResetEvaluation(ctx, s.CommitmentHash)
+	if err != nil {
+		log.Printf("[Monitor] reset %s... to PENDING: %v", shortHash(s.CommitmentHash), err)
+		return
+	}
+	if reset {
+		s.Status = domain.IntentPending
+		return
+	}
+	log.Printf("[Monitor] skip reset for %s... because status changed during evaluation", shortHash(s.CommitmentHash))
+	m.StopMonitoring(s.CommitmentHash)
+}
+
+func (m *MonitorService) markEvaluationFailed(ctx context.Context, commitmentHash, reason string) {
+	marked, err := m.repo.MarkFailed(ctx, commitmentHash, reason)
+	if err != nil {
+		log.Printf("[Monitor] mark %s... FAILED: %v", shortHash(commitmentHash), err)
+		return
+	}
+	if !marked {
+		log.Printf("[Monitor] skip FAILED for %s... because status changed during evaluation", shortHash(commitmentHash))
+	}
+}
+
+func isPermanentEnclaveImportError(err error) bool {
+	var httpErr *EnclaveHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode >= 400 && httpErr.StatusCode < 500
+	}
+	return false
+}
+
+func (m *MonitorService) pruneEnclave(ctx context.Context, commitmentHash string) error {
+	if m.enclave == nil {
+		return nil
+	}
+	pruneCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return m.enclave.Prune(pruneCtx, commitmentHash)
+}
+
+func (m *MonitorService) latestBlockContext(ctx context.Context, fallbackTimestamp int64) (string, int64, error) {
+	if m.ethClient == nil {
+		return "", fallbackTimestamp, nil
+	}
+	header, err := m.ethClient.HeaderByNumber(ctx, nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("latest block header: %w", err)
+	}
+	return header.Number.String(), int64(header.Time), nil
+}
+
+func (m *MonitorService) isCommitmentPendingOnChain(ctx context.Context, commitmentHash string) (bool, error) {
+	if !m.hasRegistry {
+		return false, fmt.Errorf("registry unavailable")
+	}
+	return m.isCommitmentPendingOnChainAt(ctx, m.registryAddr, commitmentHash)
+}
+
+func (m *MonitorService) isCommitmentPendingOnChainAt(ctx context.Context, registryAddr common.Address, commitmentHash string) (bool, error) {
+	packed, err := m.regABI.Pack("getCommitmentStatus", common.HexToHash(commitmentHash))
+	if err != nil {
+		return false, fmt.Errorf("pack getCommitmentStatus: %w", err)
+	}
+	result, err := m.ethClient.CallContract(ctx, ethereum.CallMsg{To: &registryAddr, Data: packed}, nil)
+	if err != nil {
+		return false, fmt.Errorf("call getCommitmentStatus: %w", err)
+	}
+	out, err := m.regABI.Unpack("getCommitmentStatus", result)
+	if err != nil {
+		return false, fmt.Errorf("unpack getCommitmentStatus: %w", err)
+	}
+	status, ok := out[0].(uint8)
+	if !ok {
+		return false, fmt.Errorf("unexpected getCommitmentStatus return type")
+	}
+	return status == commitmentStatusPending, nil
+}
+
+func (m *MonitorService) ValidateExecutionTicketClaim(ctx context.Context, executor string, ticket domain.ExecutionTicket) (TicketClaimCheck, error) {
+	if m.ethClient == nil {
+		return TicketClaimCheck{}, fmt.Errorf("ethereum client unavailable")
+	}
+	if !common.IsHexAddress(executor) {
+		return TicketClaimCheck{}, fmt.Errorf("executor must be an EVM address")
+	}
+	if !common.IsHexAddress(ticket.Registry) {
+		return TicketClaimCheck{}, fmt.Errorf("ticket registry must be an EVM address")
+	}
+
+	fillRef, err := strconv.ParseUint(ticket.FillRef, 10, 64)
+	if err != nil {
+		return TicketClaimCheck{}, fmt.Errorf("invalid ticket fillRef: %w", err)
+	}
+
+	registryAddr := common.HexToAddress(ticket.Registry)
+	data, err := m.regABI.Pack(
+		"executeCommitment",
+		common.HexToHash(ticket.CommitmentHash),
+		common.HexToHash(ticket.Nullifier),
+		common.FromHex(ticket.Proof),
+		fillRef,
+	)
+	if err != nil {
+		return TicketClaimCheck{}, fmt.Errorf("pack executeCommitment: %w", err)
+	}
+
+	from := common.HexToAddress(executor)
+	_, callErr := m.ethClient.CallContract(ctx, ethereum.CallMsg{
+		From:     from,
+		To:       &registryAddr,
+		GasPrice: big.NewInt(claimSimulationGasPrice),
+		Data:     data,
+	}, nil)
+	if callErr == nil {
+		return TicketClaimCheck{Executable: true, CommitmentPending: true}, nil
+	}
+
+	pending, statusErr := m.isCommitmentPendingOnChainAt(ctx, registryAddr, ticket.CommitmentHash)
+	if statusErr != nil {
+		return TicketClaimCheck{}, fmt.Errorf("simulate executeCommitment: %w; status check: %w", callErr, statusErr)
+	}
+	return TicketClaimCheck{
+		Executable:        false,
+		CommitmentPending: pending,
+		Reason:            callErr.Error(),
+	}, nil
+}
+
+func shortHash(hash string) string {
+	if len(hash) <= 10 {
+		return hash
+	}
+	return hash[:10]
 }
 
 // fetchPairPrice mirrors CommitmentRegistry._readOraclePrice:
@@ -358,6 +633,24 @@ func (m *MonitorService) fetchPairPrice(ctx context.Context, tokenIn, tokenOut s
 		return nil, fmt.Errorf("tokenOut feed: %w", err)
 	}
 
+	priceU, err := derivePairPrice(answerIn, dIn, answerOut, dOut)
+	if err != nil {
+		return nil, err
+	}
+	return priceU, nil
+}
+
+func derivePairPrice(answerIn *big.Int, dIn uint8, answerOut *big.Int, dOut uint8) (*big.Int, error) {
+	if answerIn == nil || answerIn.Sign() <= 0 {
+		return nil, fmt.Errorf("non-positive tokenIn oracle answer")
+	}
+	if answerOut == nil || answerOut.Sign() <= 0 {
+		return nil, fmt.Errorf("non-positive tokenOut oracle answer")
+	}
+	if dIn > 18 || dOut > 18 {
+		return nil, fmt.Errorf("oracle decimals above 18 are unsupported")
+	}
+
 	ten := big.NewInt(10)
 	normIn := new(big.Int).Mul(answerIn, new(big.Int).Exp(ten, big.NewInt(int64(18-dIn)), nil))
 	normOut := new(big.Int).Mul(answerOut, new(big.Int).Exp(ten, big.NewInt(int64(18-dOut)), nil))
@@ -368,6 +661,9 @@ func (m *MonitorService) fetchPairPrice(ctx context.Context, tokenIn, tokenOut s
 
 	if priceU.Sign() <= 0 {
 		return nil, fmt.Errorf("derived pair price is zero")
+	}
+	if priceU.BitLen() > 64 {
+		return nil, fmt.Errorf("derived pair price overflows uint64")
 	}
 	return priceU, nil
 }
@@ -396,7 +692,6 @@ func (m *MonitorService) callRegistryPriceFeed(ctx context.Context, token common
 }
 
 func (m *MonitorService) callChainlinkFeed(ctx context.Context, feedAddr common.Address) (answer *big.Int, decimals uint8, err error) {
-	// latestRoundData
 	packed, err := m.feedABI.Pack("latestRoundData")
 	if err != nil {
 		return nil, 0, fmt.Errorf("pack latestRoundData: %w", err)
@@ -414,7 +709,6 @@ func (m *MonitorService) callChainlinkFeed(ctx context.Context, feedAddr common.
 		return nil, 0, fmt.Errorf("non-positive oracle price from feed %s", feedAddr)
 	}
 
-	// decimals
 	packed, err = m.feedABI.Pack("decimals")
 	if err != nil {
 		return nil, 0, fmt.Errorf("pack decimals: %w", err)
@@ -433,74 +727,4 @@ func (m *MonitorService) callChainlinkFeed(ctx context.Context, feedAddr common.
 	}
 
 	return ans, dec, nil
-}
-
-func (m *MonitorService) triggerKeeper(s *domain.PendingIntent) {
-	// On the keeper wire, LIMIT and MARKET both use ORDER_FILL: same circuit,
-	// same verifier, same on-chain kind=0. The keeper's oracle re-verify
-	// trivially passes for MARKET against the sentinel limit price.
-	wireKind := domain.OnChainKindOrderFill
-	if s.Kind == domain.KindDCA {
-		wireKind = string(domain.KindDCA)
-	}
-	payload := executeRequest{
-		CommitmentHash: s.CommitmentHash,
-		Kind:           wireKind,
-		TokenIn:        s.TokenIn,
-		TokenOut:       s.TokenOut,
-		Size:           s.Size,
-		MinOut:         s.MinOut,
-		Expiry:         s.Expiry,
-		LimitPrice:     s.LimitPrice,
-		Direction:      s.Direction,
-		Nonce:          s.Nonce,
-		Nullifier:      s.Nullifier,
-		ScheduledLo:    s.ScheduledLo,
-		ScheduledHi:    s.ScheduledHi,
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("[Monitor] marshal trigger payload: %v", err)
-		return
-	}
-
-	url := strings.TrimRight(m.keeperURL, "/") + "/api/execute"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		log.Printf("[Monitor] build trigger request: %v", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if m.keeperAPISecret != "" {
-		req.Header.Set("Authorization", "Bearer "+m.keeperAPISecret)
-	}
-	resp, err := m.httpClient.Do(req)
-	if err != nil {
-		metrics.KeeperTriggerTotal.WithLabelValues("error").Inc()
-		log.Printf("[Monitor] POST %s failed for %s...: %v", url, s.CommitmentHash[:10], err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK {
-		metrics.KeeperTriggerTotal.WithLabelValues("accepted").Inc()
-		log.Printf("[Monitor] keeper accepted trigger for %s... (status=%d)", s.CommitmentHash[:10], resp.StatusCode)
-		return
-	}
-
-	// Keeper rejected (most commonly 422 fill-condition mismatch or 503 oracle
-	// unavailable). The execution did NOT happen on-chain — reset to PENDING
-	// and resume monitoring so the next tick can retry. Without this, the row
-	// would sit in EXECUTING until the periodic sweeper picks it up.
-	metrics.KeeperTriggerTotal.WithLabelValues("rejected").Inc()
-	log.Printf("[Monitor] keeper rejected trigger for %s... (status=%d) — resuming monitor", s.CommitmentHash[:10], resp.StatusCode)
-	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := m.repo.UpdateStatus(rollbackCtx, s.CommitmentHash, domain.IntentPending); err != nil {
-		log.Printf("[Monitor] reset to PENDING after rejection: %v", err)
-		return
-	}
-	s.Status = domain.IntentPending
-	m.startMonitoring(context.Background(), s)
 }
