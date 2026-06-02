@@ -26,8 +26,8 @@ export type IntentDirection = 0 | 1; // 0 = BUY, 1 = SELL
  * - LIMIT:  user-selected BUY or SELL, fills at a target price (oracle-polled fill)
  * - MARKET: user-selected BUY or SELL, fills immediately at current oracle price.
  *           Encoded with a sentinel commitment price (u64.max for BUY, 0 for SELL)
- *           so the circuit's fill check trivially passes. Backend skips polling
- *           and triggers the keeper on the first monitor tick.
+ *           so the circuit's fill check trivially passes. Backend schedules
+ *           enclave proving immediately.
  */
 export type IntentKind = "LIMIT" | "MARKET";
 
