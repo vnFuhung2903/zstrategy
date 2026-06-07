@@ -1,14 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { ComponentType } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   AlertTriangle,
   BadgeCheck,
-  Bolt,
-  CheckCircle2,
   Clock3,
   Loader2,
   RadioTower,
@@ -16,11 +13,10 @@ import {
   Rocket,
   ShieldCheck,
   Terminal,
-  Wallet,
   WifiOff,
   Zap,
 } from "lucide-react";
-import { useAccount, useChainId, usePublicClient, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
+import { useAccount, useChainId, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/Button";
 import { useExecutorTickets } from "@/hooks/useBackendApi";
@@ -83,9 +79,17 @@ function validateTicket(envelope: ExecutorTicketEnvelope, expectedChainId: numbe
   assertBytes32(ticket.commitmentHash, "ticket.commitmentHash");
   assertBytes32(ticket.nullifier, "ticket.nullifier");
   assertBytes32(ticket.packageHash, "ticket.packageHash");
+  assertBytes32(ticket.proverId, "ticket.proverId");
+  assertBytes32(ticket.proverReceipt.proverId, "ticket.proverReceipt.proverId");
   assertHexData(ticket.proof, "ticket.proof");
-  assertHexData(ticket.proverSignature, "ticket.proverSignature");
+  assertHexData(ticket.proverReceipt.signature, "ticket.proverReceipt.signature");
   parseUint64(ticket.fillRef, "ticket.fillRef");
+  if (ticket.proverReceipt.proverId.toLowerCase() !== ticket.proverId.toLowerCase()) {
+    throw new Error("ticket proverReceipt does not match proverId");
+  }
+  if (ticket.proverReceipt.ticketExpiresAt !== ticket.ticketExpiresAt) {
+    throw new Error("ticket proverReceipt expiry does not match ticket expiry");
+  }
 }
 
 function formatExpires(expiresAt: number, now: number) {
@@ -101,38 +105,7 @@ function queueStatus(expiresAt: number, now: number) {
   const remaining = expiresAt - now;
   if (remaining <= 0) return "Expired";
   if (remaining < 20) return "Hot";
-  return "Backend-ready";
-}
-
-function MetricCard({
-  label,
-  value,
-  tone = "default",
-  icon: Icon,
-}: {
-  label: string;
-  value: string;
-  tone?: "default" | "primary" | "tertiary";
-  icon: ComponentType<{ size?: number; className?: string }>;
-}) {
-  return (
-    <div className="bg-surface-container-low p-4 rounded-sm border border-outline-variant/10 min-h-[104px] relative overflow-hidden">
-      <Icon size={18} className="absolute top-4 right-4 text-on-surface-variant/30" />
-      <div className="text-[10px] uppercase tracking-widest text-on-surface-variant mb-2 font-bold">
-        {label}
-      </div>
-      <div
-        className={cn(
-          "text-2xl font-display font-bold font-tabular break-words",
-          tone === "primary" && "text-primary-container",
-          tone === "tertiary" && "text-tertiary-container",
-          tone === "default" && "text-on-surface",
-        )}
-      >
-        {value}
-      </div>
-    </div>
-  );
+  return "Claimable";
 }
 
 function TicketRow({
@@ -215,13 +188,11 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 export default function ExecutorPage() {
   const chainId = useChainId();
   const { address, isConnected } = useAccount();
-  const publicClient = usePublicClient();
   const queryClient = useQueryClient();
   const ticketsQuery = useExecutorTickets(20);
   const tickets = useMemo(() => ticketsQuery.data?.data ?? [], [ticketsQuery.data?.data]);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
   const [claimedTicket, setClaimedTicket] = useState<ExecutorTicketEnvelope | null>(null);
-  const [lastGasEstimate, setLastGasEstimate] = useState<bigint | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const { writeContractAsync, data: txHash, isPending: txPending, error: txError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash: txHash });
@@ -244,7 +215,8 @@ export default function ExecutorPage() {
     void queryClient.invalidateQueries({ queryKey: ["executor-tickets"] });
   }, [isSuccess, queryClient]);
 
-  const selected = tickets.find(ticket => ticket.commitmentHash === selectedHash) ?? tickets[0] ?? claimedTicket;
+  const selectedReadyTicket = tickets.find(ticket => ticket.commitmentHash === selectedHash) ?? tickets[0] ?? null;
+  const selected = selectedReadyTicket ?? claimedTicket;
   const hasFreshTickets = tickets.some(ticket => ticket.ticketExpiresAt > now);
 
   const claimAndExecute = useMutation({
@@ -252,11 +224,7 @@ export default function ExecutorPage() {
       if (!isConnected || !address) {
         throw new Error("connect an executor wallet first");
       }
-      if (!publicClient) {
-        throw new Error("wallet RPC client unavailable");
-      }
-
-      const claimed = await api.claimExecutorTicket(chainId, address);
+      const claimed = await api.claimExecutorTicket(chainId, address, selectedReadyTicket?.commitmentHash);
       if (!claimed) {
         return null;
       }
@@ -270,32 +238,25 @@ export default function ExecutorPage() {
         claimed.ticket.nullifier,
         claimed.ticket.proof,
         fillRef,
+        {
+          proverId: claimed.ticket.proverReceipt.proverId,
+          ticketExpiresAt: BigInt(claimed.ticket.proverReceipt.ticketExpiresAt),
+          signature: claimed.ticket.proverReceipt.signature,
+        },
       ] as const;
-
-      const estimatedGas = await publicClient.estimateContractGas({
-        account: address,
-        address: claimed.ticket.registry,
-        abi: COMMITMENT_REGISTRY_ABI,
-        functionName: "executeCommitment",
-        args,
-        ...FEE_OVERRIDES,
-      });
-      const gasLimit = estimatedGas * 12n / 10n;
-      setLastGasEstimate(estimatedGas);
 
       await writeContractAsync({
         address: claimed.ticket.registry,
         abi: COMMITMENT_REGISTRY_ABI,
         functionName: "executeCommitment",
         args,
-        gas: gasLimit,
         ...FEE_OVERRIDES,
       });
       return claimed;
     },
     onSuccess: (claimed) => {
       if (!claimed) {
-        toast.message("No backend-ready tickets", {
+        toast.message("No claimable tickets", {
           description: "The executor queue is empty for this chain.",
         });
       }
@@ -315,10 +276,10 @@ export default function ExecutorPage() {
         <section className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-outline-variant/10 pb-6">
           <div>
             <h1 className="font-display text-4xl md:text-5xl font-bold text-on-surface mb-2">
-              Executor Node Alpha
+              Executor Alpha
             </h1>
             <p className="text-on-surface-variant text-sm max-w-2xl">
-              Claim backend-ready execution tickets and submit their ZK proof bundles without receiving private witness data.
+              Claim execution tickets and submit their ZK proof bundles without receiving private witness data.
             </p>
           </div>
           <div className="flex items-center gap-3 bg-surface-container-highest px-4 py-2 rounded-sm border border-outline-variant/20">
@@ -330,18 +291,6 @@ export default function ExecutorPage() {
               {ticketsQuery.isError ? "Backend Unavailable" : "Ticket Relay Online"}
             </span>
           </div>
-        </section>
-
-        <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricCard label="Tickets Ready" value={tickets.length.toString()} tone="primary" icon={Terminal} />
-          <MetricCard label="Wallet" value={isConnected && address ? truncateAddress(address, 6) : "Disconnected"} icon={Wallet} />
-          <MetricCard label="Network" value={`Chain ${chainId}`} icon={RadioTower} />
-          <MetricCard
-            label="Gas Estimate"
-            value={lastGasEstimate ? lastGasEstimate.toLocaleString("en-US") : "Not run"}
-            tone={lastGasEstimate ? "tertiary" : "default"}
-            icon={Bolt}
-          />
         </section>
 
         {ticketsQuery.isError && (
@@ -381,7 +330,7 @@ export default function ExecutorPage() {
               {!ticketsQuery.isLoading && tickets.length === 0 && (
                 <div className="h-full min-h-[320px] flex flex-col items-center justify-center text-center text-on-surface-variant">
                   <Terminal size={28} className="mb-3 opacity-70" />
-                  <p className="text-sm font-medium text-on-surface">No backend-ready tickets</p>
+                  <p className="text-sm font-medium text-on-surface">No tickets</p>
                   <p className="text-xs mt-1 max-w-sm">
                     The prover scheduler has not published an executable ticket for this chain.
                   </p>
@@ -434,23 +383,14 @@ export default function ExecutorPage() {
                     onClick={() => claimAndExecute.mutate()}
                   >
                     {actionBusy ? <Loader2 size={18} className="animate-spin" /> : <Rocket size={18} />}
-                    CLAIM NEXT TICKET
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="md"
-                    className="w-full uppercase text-xs tracking-widest"
-                    disabled
-                  >
-                    <CheckCircle2 size={14} />
-                    Batch Execute Deferred
+                    {selectedReadyTicket ? "Claim Selected Ticket" : "Claim Next Ticket"}
                   </Button>
                 </div>
 
                 <div className="rounded-sm bg-tertiary-container/10 border border-tertiary-container/20 p-3 flex items-start gap-2">
                   <AlertTriangle size={15} className="text-tertiary-container mt-0.5 shrink-0" />
                   <p className="text-xs text-on-surface-variant">
-                    Backend-ready tickets can still revert if chain state, oracle price, expiry, or nullifier state changes before settlement.
+                    Claimable tickets can still revert if chain state, oracle price, expiry, or nullifier state changes before settlement.
                   </p>
                 </div>
 
@@ -464,12 +404,9 @@ export default function ExecutorPage() {
                   <div className="bg-surface-container/30 border border-outline-variant/10 rounded-sm p-4 space-y-4">
                     {selected ? (
                       <>
-                        <DetailRow label="Hash" value={truncateAddress(selected.commitmentHash, 10)} />
-                        <DetailRow label="Registry" value={truncateAddress(selected.registry, 10)} />
-                        <DetailRow label="Intent" value={`${selected.intentKind} / ${selected.circuitKind}`} />
-                        <DetailRow label="Fill Ref" value={selected.ticket.fillRef} />
+                        <DetailRow label="Commitment" value={truncateAddress(selected.commitmentHash, 10)} />
+                        <DetailRow label="Intent" value={`${selected.intentKind}`} />
                         <DetailRow label="Expires" value={formatExpires(selected.ticketExpiresAt, now)} />
-                        <DetailRow label="Provers" value={selected.ticket.proverIds.join(", ") || "none"} />
                       </>
                     ) : (
                       <p className="text-xs text-on-surface-variant">No ticket selected.</p>
@@ -480,12 +417,9 @@ export default function ExecutorPage() {
 
               <div className="p-3 border-t border-outline-variant/10 bg-surface-container-low/30">
                 <div className="flex justify-between items-center gap-3">
-                  <span className="text-[9px] uppercase tracking-[0.2em] text-outline font-medium">
-                    Public executor wallet required
-                  </span>
                   <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-[0.2em] text-primary-container/60 font-black">
                     <BadgeCheck size={12} />
-                    ZSTRAT-M01
+                    Public executor wallet required
                   </div>
                 </div>
               </div>
