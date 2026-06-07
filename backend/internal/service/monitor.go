@@ -23,7 +23,7 @@ import (
 const registryReadABI = `[
   {"name":"priceFeeds","type":"function","inputs":[{"name":"token","type":"address"}],"outputs":[{"name":"","type":"address"}]},
   {"name":"getCommitmentStatus","type":"function","inputs":[{"name":"commitmentHash","type":"bytes32"}],"outputs":[{"name":"","type":"uint8"}]},
-  {"name":"executeCommitment","type":"function","inputs":[{"name":"commitmentHash","type":"bytes32"},{"name":"nullifier","type":"bytes32"},{"name":"proof","type":"bytes"},{"name":"fillRef","type":"uint64"}],"outputs":[]}
+  {"name":"executeCommitment","type":"function","inputs":[{"name":"commitmentHash","type":"bytes32"},{"name":"nullifier","type":"bytes32"},{"name":"proof","type":"bytes"},{"name":"fillRef","type":"uint64"},{"name":"receipt","type":"tuple","components":[{"name":"proverId","type":"bytes32"},{"name":"ticketExpiresAt","type":"uint64"},{"name":"signature","type":"bytes"}]}],"outputs":[]}
 ]`
 
 const chainlinkAggregatorABI = `[
@@ -36,7 +36,7 @@ const (
 	stuckExecutingThreshold = 10 * time.Minute
 	stuckSweepInterval      = 5 * time.Minute
 	commitmentStatusPending = uint8(1)
-	claimSimulationGasPrice = int64(1_000_000_000)
+	claimSimulationGasLimit = uint64(200_000_000)
 )
 
 type trackedMonitor struct {
@@ -57,15 +57,22 @@ type MonitorService struct {
 	isOnChainPendingFn   func(context.Context, string) (bool, error)
 	latestBlockContextFn func(context.Context, int64) (string, int64, error)
 
-	mu        sync.Mutex
-	stopChans map[string]trackedMonitor
-	rootCtx   context.Context
+	mu                  sync.Mutex
+	stopChans           map[string]trackedMonitor
+	activeDcaGroupLocks map[string]string
+	rootCtx             context.Context
 }
 
 type TicketClaimCheck struct {
 	Executable        bool
 	CommitmentPending bool
 	Reason            string
+}
+
+type proverReceiptCall struct {
+	ProverId        common.Hash
+	TicketExpiresAt uint64
+	Signature       []byte
 }
 
 func NewMonitorService(
@@ -87,14 +94,15 @@ func NewMonitorService(
 	}
 
 	m := &MonitorService{
-		repo:         repo,
-		ethClient:    ethClient,
-		registryAddr: addr,
-		hasRegistry:  hasRegistry,
-		regABI:       regABI,
-		feedABI:      feedABI,
-		enclave:      enclave,
-		stopChans:    make(map[string]trackedMonitor),
+		repo:                repo,
+		ethClient:           ethClient,
+		registryAddr:        addr,
+		hasRegistry:         hasRegistry,
+		regABI:              regABI,
+		feedABI:             feedABI,
+		enclave:             enclave,
+		stopChans:           make(map[string]trackedMonitor),
+		activeDcaGroupLocks: make(map[string]string),
 	}
 	m.fetchPairPriceFn = m.fetchPairPrice
 	m.isOnChainPendingFn = m.isCommitmentPendingOnChain
@@ -180,6 +188,30 @@ func (m *MonitorService) StopMonitoring(commitmentHash string) {
 	}
 }
 
+func (m *MonitorService) tryLockDcaGroup(s *domain.PendingIntent) (func(), bool) {
+	if s.Kind != domain.KindDCA || s.DCAGroupLockID == "" {
+		return func() {}, true
+	}
+
+	lockID := strings.ToLower(s.DCAGroupLockID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if active, exists := m.activeDcaGroupLocks[lockID]; exists && !strings.EqualFold(active, s.CommitmentHash) {
+		log.Printf("[Monitor] defer %s... because DCA group lock %s... is already proving", shortHash(s.CommitmentHash), shortHash(lockID))
+		return nil, false
+	}
+	m.activeDcaGroupLocks[lockID] = s.CommitmentHash
+
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if strings.EqualFold(m.activeDcaGroupLocks[lockID], s.CommitmentHash) {
+			delete(m.activeDcaGroupLocks, lockID)
+		}
+	}, true
+}
+
 func (m *MonitorService) UpdateStatus(ctx context.Context, commitmentHash string, status domain.IntentStatus) {
 	if err := m.repo.UpdateStatus(ctx, commitmentHash, status); err != nil {
 		log.Printf("[Monitor] UpdateStatus %s: %v", shortHash(commitmentHash), err)
@@ -263,6 +295,12 @@ func (m *MonitorService) evaluateAndMaybeTicket(ctx context.Context, s *domain.P
 		_ = m.pruneEnclave(ctx, s.CommitmentHash)
 		return
 	}
+
+	releaseDcaGroup, locked := m.tryLockDcaGroup(s)
+	if !locked {
+		return
+	}
+	defer releaseDcaGroup()
 
 	claimed, err := m.repo.ClaimForEvaluation(ctx, s.CommitmentHash)
 	if err != nil {
@@ -409,6 +447,7 @@ func decodeStoredPackage(s *domain.PendingIntent) (domain.EncryptedWitnessPackag
 		!strings.EqualFold(pkg.AAD.Registry, s.Registry) ||
 		!strings.EqualFold(pkg.AAD.TokenIn, s.TokenIn) ||
 		!strings.EqualFold(pkg.AAD.TokenOut, s.TokenOut) ||
+		!strings.EqualFold(pkg.AAD.DCAGroupLockID, s.DCAGroupLockID) ||
 		pkg.AAD.Size != s.Size ||
 		pkg.AAD.MinOut != s.MinOut ||
 		pkg.AAD.Expiry != s.Expiry {
@@ -441,6 +480,14 @@ func validateExecutionTicket(
 	}
 	if ticket.Proof == "" || ticket.Nullifier == "" {
 		return fmt.Errorf("ticket missing proof or nullifier")
+	}
+	if !isHexBytes32(ticket.ProverID) {
+		return fmt.Errorf("ticket missing proverId")
+	}
+	if !strings.EqualFold(ticket.ProverReceipt.ProverID, ticket.ProverID) ||
+		ticket.ProverReceipt.TicketExpiresAt != ticket.TicketExpiresAt ||
+		!isHexData(ticket.ProverReceipt.Signature) {
+		return fmt.Errorf("ticket missing proverReceipt")
 	}
 	if ticket.TicketExpiresAt <= now.Unix() {
 		return errTicketExpired
@@ -556,6 +603,20 @@ func (m *MonitorService) ValidateExecutionTicketClaim(ctx context.Context, execu
 	if err != nil {
 		return TicketClaimCheck{}, fmt.Errorf("invalid ticket fillRef: %w", err)
 	}
+	if !isHexBytes32(ticket.ProverID) {
+		return TicketClaimCheck{}, fmt.Errorf("ticket missing proverId")
+	}
+	if !strings.EqualFold(ticket.ProverReceipt.ProverID, ticket.ProverID) ||
+		ticket.ProverReceipt.TicketExpiresAt < 0 ||
+		ticket.ProverReceipt.TicketExpiresAt != ticket.TicketExpiresAt ||
+		!isHexData(ticket.ProverReceipt.Signature) {
+		return TicketClaimCheck{}, fmt.Errorf("ticket missing proverReceipt")
+	}
+	receipt := proverReceiptCall{
+		ProverId:        common.HexToHash(ticket.ProverReceipt.ProverID),
+		TicketExpiresAt: uint64(ticket.ProverReceipt.TicketExpiresAt),
+		Signature:       common.FromHex(ticket.ProverReceipt.Signature),
+	}
 
 	registryAddr := common.HexToAddress(ticket.Registry)
 	data, err := m.regABI.Pack(
@@ -564,6 +625,7 @@ func (m *MonitorService) ValidateExecutionTicketClaim(ctx context.Context, execu
 		common.HexToHash(ticket.Nullifier),
 		common.FromHex(ticket.Proof),
 		fillRef,
+		receipt,
 	)
 	if err != nil {
 		return TicketClaimCheck{}, fmt.Errorf("pack executeCommitment: %w", err)
@@ -571,10 +633,10 @@ func (m *MonitorService) ValidateExecutionTicketClaim(ctx context.Context, execu
 
 	from := common.HexToAddress(executor)
 	_, callErr := m.ethClient.CallContract(ctx, ethereum.CallMsg{
-		From:     from,
-		To:       &registryAddr,
-		GasPrice: big.NewInt(claimSimulationGasPrice),
-		Data:     data,
+		From: from,
+		To:   &registryAddr,
+		Gas:  claimSimulationGasLimit,
+		Data: data,
 	}, nil)
 	if callErr == nil {
 		return TicketClaimCheck{Executable: true, CommitmentPending: true}, nil
@@ -596,6 +658,23 @@ func shortHash(hash string) string {
 		return hash
 	}
 	return hash[:10]
+}
+
+func isHexBytes32(value string) bool {
+	return len(value) == 66 && isHexData(value)
+}
+
+func isHexData(value string) bool {
+	if len(value) < 2 || !strings.HasPrefix(value, "0x") || len(value)%2 != 0 {
+		return false
+	}
+	for _, r := range value[2:] {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // fetchPairPrice mirrors CommitmentRegistry._readOraclePrice:

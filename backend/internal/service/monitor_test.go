@@ -5,10 +5,13 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/zstrategy/backend/internal/domain"
 )
 
@@ -172,6 +175,7 @@ type fakeEnclaveClient struct {
 	evaluateError  error
 	importError    error
 	ticketOverride *domain.ExecutionTicket
+	ticketKind     domain.IntentCircuitKind
 	packageHashes  map[string]string
 	onImport       func()
 	onEvaluate     func()
@@ -208,19 +212,32 @@ func (e *fakeEnclaveClient) Evaluate(_ context.Context, hash string, fillCtx dom
 		cp := *e.ticketOverride
 		return &cp, true, nil
 	}
+	kind := e.ticketKind
+	if kind == "" {
+		kind = domain.CircuitKindOrderFill
+	}
+	fillRef := "0"
+	if kind == domain.CircuitKindDCA {
+		fillRef = strconv.FormatInt(fillCtx.BlockTimestamp, 10)
+	}
+	expiresAt := time.Now().Add(time.Minute).Unix()
 	return &domain.ExecutionTicket{
 		Version:         1,
 		ChainID:         fillCtx.ChainID,
 		Registry:        fillCtx.Registry,
 		CommitmentHash:  hash,
-		Kind:            domain.CircuitKindOrderFill,
+		Kind:            kind,
 		Nullifier:       hashOf("77"),
-		FillRef:         "0",
+		FillRef:         fillRef,
 		Proof:           "0xabcd",
-		TicketExpiresAt: time.Now().Add(time.Minute).Unix(),
+		TicketExpiresAt: expiresAt,
 		PackageHash:     e.packageHashes[hash],
-		ProverIDs:       []string{"test"},
-		ProverSignature: "0x99",
+		ProverID:        hashOf("99"),
+		ProverReceipt: domain.ProverReceipt{
+			ProverID:        hashOf("99"),
+			TicketExpiresAt: expiresAt,
+			Signature:       "0x99",
+		},
 	}, true, nil
 }
 func (e *fakeEnclaveClient) Prune(_ context.Context, hash string) error {
@@ -325,6 +342,113 @@ func TestSchedulerResetsDcaNotReadyWithoutOracleRead(t *testing.T) {
 	}
 	if repo.intents[intent.CommitmentHash].Status != domain.IntentPending {
 		t.Fatalf("status = %s, want PENDING", repo.intents[intent.CommitmentHash].Status)
+	}
+}
+
+func TestSchedulerPreventsConcurrentDcaProofJobsForSameGroup(t *testing.T) {
+	lockID := hashOf("bb")
+	first := testPendingIntent(t, domain.KindDCA, domain.CircuitKindDCA, hashOf("20"))
+	second := testPendingIntent(t, domain.KindDCA, domain.CircuitKindDCA, hashOf("21"))
+	first.DCAGroupLockID = lockID
+	second.DCAGroupLockID = lockID
+	repo := newMonitorIntentRepo(first, second)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	enclave := &fakeEnclaveClient{
+		ready:      true,
+		ticketKind: domain.CircuitKindDCA,
+		onEvaluate: func() {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			<-release
+		},
+	}
+	monitor := testMonitor(repo, enclave, 100)
+
+	done := make(chan struct{})
+	go func() {
+		monitor.evaluateAndMaybeTicket(context.Background(), first)
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatalf("first DCA evaluation did not start")
+	}
+
+	monitor.evaluateAndMaybeTicket(context.Background(), second)
+	if got := repo.intents[second.CommitmentHash].Status; got != domain.IntentPending {
+		t.Fatalf("second status = %s, want PENDING while same group is proving", got)
+	}
+	if enclave.imports != 1 || len(enclave.evaluations) != 1 {
+		t.Fatalf("second same-group intent reached enclave: imports=%d evaluations=%d", enclave.imports, len(enclave.evaluations))
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("first DCA evaluation did not finish")
+	}
+	if got := repo.intents[first.CommitmentHash].Status; got != domain.IntentTicketReady {
+		t.Fatalf("first status = %s, want TICKET_READY", got)
+	}
+}
+
+func TestSchedulerReleasesDcaProofLockAfterNotReady(t *testing.T) {
+	lockID := hashOf("bb")
+	first := testPendingIntent(t, domain.KindDCA, domain.CircuitKindDCA, hashOf("22"))
+	second := testPendingIntent(t, domain.KindDCA, domain.CircuitKindDCA, hashOf("23"))
+	first.DCAGroupLockID = lockID
+	second.DCAGroupLockID = lockID
+	repo := newMonitorIntentRepo(first, second)
+	enclave := &fakeEnclaveClient{ready: false, ticketKind: domain.CircuitKindDCA}
+	monitor := testMonitor(repo, enclave, 100)
+
+	monitor.evaluateAndMaybeTicket(context.Background(), first)
+	monitor.evaluateAndMaybeTicket(context.Background(), second)
+
+	if got := repo.intents[first.CommitmentHash].Status; got != domain.IntentPending {
+		t.Fatalf("first status = %s, want PENDING after NOT_READY", got)
+	}
+	if got := repo.intents[second.CommitmentHash].Status; got != domain.IntentPending {
+		t.Fatalf("second status = %s, want PENDING after NOT_READY", got)
+	}
+	if enclave.imports != 2 || len(enclave.evaluations) != 2 {
+		t.Fatalf("lock was not released after NOT_READY: imports=%d evaluations=%d", enclave.imports, len(enclave.evaluations))
+	}
+}
+
+func TestSchedulerReleasesDcaProofLockAfterEvaluateError(t *testing.T) {
+	lockID := hashOf("bb")
+	first := testPendingIntent(t, domain.KindDCA, domain.CircuitKindDCA, hashOf("24"))
+	second := testPendingIntent(t, domain.KindDCA, domain.CircuitKindDCA, hashOf("25"))
+	first.DCAGroupLockID = lockID
+	second.DCAGroupLockID = lockID
+	repo := newMonitorIntentRepo(first, second)
+	enclave := &fakeEnclaveClient{
+		ready:         false,
+		ticketKind:    domain.CircuitKindDCA,
+		evaluateError: errors.New("temporary proof failure"),
+	}
+	monitor := testMonitor(repo, enclave, 100)
+
+	monitor.evaluateAndMaybeTicket(context.Background(), first)
+	monitor.evaluateAndMaybeTicket(context.Background(), second)
+
+	if got := repo.intents[first.CommitmentHash].Status; got != domain.IntentPending {
+		t.Fatalf("first status = %s, want PENDING after evaluate error", got)
+	}
+	if got := repo.intents[second.CommitmentHash].Status; got != domain.IntentPending {
+		t.Fatalf("second status = %s, want PENDING after evaluate error", got)
+	}
+	if enclave.imports != 2 || len(enclave.evaluations) != 2 {
+		t.Fatalf("lock was not released after evaluate error: imports=%d evaluations=%d", enclave.imports, len(enclave.evaluations))
 	}
 }
 
@@ -459,10 +583,62 @@ func TestSchedulerRejectsMismatchedTicketWithoutPublishing(t *testing.T) {
 	}
 }
 
+func TestSchedulerRejectsTicketMissingProverReceiptWithoutPublishing(t *testing.T) {
+	intent := testPendingIntent(t, domain.KindMarket, domain.CircuitKindOrderFill, hashOf("0e"))
+	ticket := testExecutionTicket(t, intent)
+	ticket.ProverReceipt = domain.ProverReceipt{}
+	repo := newMonitorIntentRepo(intent)
+	enclave := &fakeEnclaveClient{ready: true, ticketOverride: ticket}
+	monitor := testMonitor(repo, enclave, 100)
+
+	monitor.evaluateAndMaybeTicket(context.Background(), intent)
+
+	got := repo.intents[intent.CommitmentHash]
+	if got.Status != domain.IntentFailed {
+		t.Fatalf("status = %s, want FAILED", got.Status)
+	}
+	if got.Ticket != "" || got.TicketExpiresAt != nil {
+		t.Fatalf("ticket missing prover receipt was stored: %#v", got)
+	}
+	if !strings.Contains(got.LastError, "ticket missing proverReceipt") {
+		t.Fatalf("last error = %q, want prover receipt error", got.LastError)
+	}
+}
+
+func TestRegistryReadABIPacksPhaseEExecuteCommitment(t *testing.T) {
+	regABI, err := abi.JSON(strings.NewReader(registryReadABI))
+	if err != nil {
+		t.Fatalf("parse registry ABI: %v", err)
+	}
+	data, err := regABI.Pack(
+		"executeCommitment",
+		common.HexToHash(hashOf("01")),
+		common.HexToHash(hashOf("02")),
+		common.FromHex("0xabcd"),
+		uint64(0),
+		proverReceiptCall{
+			ProverId:        common.HexToHash(hashOf("99")),
+			TicketExpiresAt: 123,
+			Signature:       common.FromHex("0x99"),
+		},
+	)
+	if err != nil {
+		t.Fatalf("pack executeCommitment: %v", err)
+	}
+	method, err := regABI.MethodById(data[:4])
+	if err != nil {
+		t.Fatalf("method id: %v", err)
+	}
+	if method.Name != "executeCommitment" || len(method.Inputs) != 5 {
+		t.Fatalf("method = %s inputs=%d, want executeCommitment with 5 inputs", method.Name, len(method.Inputs))
+	}
+}
+
 func TestSchedulerRetriesExpiredTicketWithoutPublishing(t *testing.T) {
 	intent := testPendingIntent(t, domain.KindMarket, domain.CircuitKindOrderFill, hashOf("0c"))
 	ticket := testExecutionTicket(t, intent)
 	ticket.TicketExpiresAt = time.Now().Add(-time.Minute).Unix()
+	ticket.ProverReceipt.TicketExpiresAt = ticket.TicketExpiresAt
 	repo := newMonitorIntentRepo(intent)
 	enclave := &fakeEnclaveClient{ready: true, ticketOverride: ticket}
 	monitor := testMonitor(repo, enclave, 100)
@@ -597,6 +773,10 @@ func testMonitor(repo *monitorIntentRepo, enclave *fakeEnclaveClient, oraclePric
 
 func testPendingIntent(t *testing.T, kind domain.IntentKind, circuitKind domain.IntentCircuitKind, commitmentHash string) *domain.PendingIntent {
 	t.Helper()
+	dcaGroupLockID := ""
+	if kind == domain.KindDCA {
+		dcaGroupLockID = hashOf("bb")
+	}
 	pkg := domain.EncryptedWitnessPackage{
 		Version:          1,
 		CommitmentHash:   commitmentHash,
@@ -611,6 +791,7 @@ func testPendingIntent(t *testing.T, kind domain.IntentKind, circuitKind domain.
 			Registry:       addressOf("99"),
 			CommitmentHash: commitmentHash,
 			Kind:           circuitKind,
+			DCAGroupLockID: dcaGroupLockID,
 			TokenIn:        addressOf("11"),
 			TokenOut:       addressOf("22"),
 			Size:           "100",
@@ -632,6 +813,7 @@ func testPendingIntent(t *testing.T, kind domain.IntentKind, circuitKind domain.
 		ChainID:        pkg.AAD.ChainID,
 		Registry:       pkg.AAD.Registry,
 		Kind:           kind,
+		DCAGroupLockID: dcaGroupLockID,
 		TokenIn:        pkg.AAD.TokenIn,
 		TokenOut:       pkg.AAD.TokenOut,
 		Size:           pkg.AAD.Size,
@@ -648,6 +830,7 @@ func testExecutionTicket(t *testing.T, intent *domain.PendingIntent) *domain.Exe
 	if err != nil {
 		t.Fatalf("decode package: %v", err)
 	}
+	expiresAt := time.Now().Add(time.Minute).Unix()
 	return &domain.ExecutionTicket{
 		Version:         1,
 		ChainID:         intent.ChainID,
@@ -657,10 +840,14 @@ func testExecutionTicket(t *testing.T, intent *domain.PendingIntent) *domain.Exe
 		Nullifier:       hashOf("77"),
 		FillRef:         "0",
 		Proof:           "0xabcd",
-		TicketExpiresAt: time.Now().Add(time.Minute).Unix(),
+		TicketExpiresAt: expiresAt,
 		PackageHash:     pkg.PackageHash,
-		ProverIDs:       []string{"test"},
-		ProverSignature: "0x99",
+		ProverID:        hashOf("99"),
+		ProverReceipt: domain.ProverReceipt{
+			ProverID:        hashOf("99"),
+			TicketExpiresAt: expiresAt,
+			Signature:       "0x99",
+		},
 	}
 }
 
