@@ -4,16 +4,9 @@ import { Topbar } from "@/components/layout/Topbar";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { Lock } from "lucide-react";
-import { useState } from "react";
-import { cn } from "@/lib/utils";
 import { VaultPanel } from "@/components/wallet/VaultPanel";
-import { GasTankPanel } from "@/components/GasTankPanel";
-
-const tabs = ["Locked Collateral", "Gas Tank"];
 
 export default function VaultPage() {
-  const [tab, setTab] = useState(0);
-
   return (
     <>
       <Topbar title="Vault Security" />
@@ -46,41 +39,10 @@ export default function VaultPage() {
           </div>
         </Card>
 
-        {/* Tabs */}
-        <div className="border-b border-outline-variant/10 overflow-x-auto">
-          <div className="flex gap-4 md:gap-6 min-w-max">
-            {tabs.map((t, i) => (
-              <button
-                key={t}
-                onClick={() => setTab(i)}
-                className={cn(
-                  "pb-3 text-sm font-medium transition-colors whitespace-nowrap",
-                  tab === i
-                    ? "text-primary-container border-b-2 border-primary-container"
-                    : "text-on-surface-variant hover:text-on-surface",
-                )}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Deposit / Withdraw panels — collateral (ERC-20) + gas tank (native ETH) */}
+        {/* Deposit / Withdraw panels */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {tab === 0 && (
-            <>
-              <VaultPanel />
-              <div className="hidden md:block" />
-            </>
-          )}
-
-          {tab === 1 && (
-            <>
-              <GasTankPanel />
-              <div className="hidden md:block" />
-            </>
-          )}
+          <VaultPanel />
+          <div className="hidden md:block" />
         </div>
       </div>
     </>
