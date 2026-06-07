@@ -55,8 +55,8 @@ ENCLAVE_DEV_ROOT_PUBLIC_KEY_PEM=-----BEGIN PUBLIC KEY-----\nGENERATE_WITH_NPM_RU
 | `ORDER_FILL_CIRCUIT_JSON` | Yes for real proof generation | Compiled ORDER_FILL circuit artifact path. |
 | `DCA_CIRCUIT_JSON` | Yes for real DCA proof generation | Compiled DCA circuit artifact path. |
 | `TICKET_TTL_SECONDS` | No | Execution ticket lifetime; defaults to `60`. |
-| `PROVER_ID` | Yes for Phase E demo | 0x-prefixed bytes32 prover identity placed in execution tickets and receipts. Must match the registry `setProver` ID. |
-| `PROVER_SIGNING_PRIVATE_KEY` | Yes for on-chain receipt verification | Secp256k1 key that signs Phase E prover receipts. Use a local demo key only. |
+| `PROVER_ID` | Yes for v2 executor demo | 0x-prefixed bytes32 prover identity placed in execution tickets and receipts. Must match the registry `setProver` ID. |
+| `PROVER_SIGNING_PRIVATE_KEY` | Yes for on-chain receipt verification | Secp256k1 key that signs v2 prover receipts. Use a local demo key only. |
 | `ENCLAVE_PRIVATE_KEY_HEX` | Recommended | X25519 private key for decrypting witness packages. If omitted, one is generated at boot and old packages cannot be decrypted after restart. |
 | `ENCLAVE_DEV_ROOT_PRIVATE_KEY_PEM` | Recommended | Simulated attestation root private key. Use escaped newlines in `.env`. |
 | `ENCLAVE_DEV_ROOT_PUBLIC_KEY_PEM` | Recommended | Simulated attestation root public key distributed to backend/frontend pinning. |

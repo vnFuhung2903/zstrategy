@@ -1,9 +1,9 @@
 # zstrategy public executor
 
-This package is the Phase D local/demo executor. A public executor runs it to
+This package is the local/demo public executor. A public executor runs it to
 claim one backend-ready execution ticket from the Go backend and submit the
-existing registry transaction:
-`CommitmentRegistry.executeCommitment(commitmentHash, nullifier, proof, fillRef)`.
+registry transaction:
+`CommitmentRegistry.executeCommitment(commitmentHash, nullifier, proof, fillRef, receipt)`.
 
 The backend does not import or call this package. It only exposes public ticket
 endpoints. The executor wallet does not receive plaintext witness data,
@@ -53,6 +53,8 @@ The executor validates:
 - ticket registry and commitment hash match the response envelope;
 - `ORDER_FILL` tickets use `fillRef = "0"`;
 - every `fillRef` is a uint64 decimal string;
+- ticket has one `proverId` and a matching `proverReceipt`;
+- `proverReceipt.signature` is present;
 - ticket expiry has not passed;
 - optional executor binding, if present, matches the local wallet.
 
