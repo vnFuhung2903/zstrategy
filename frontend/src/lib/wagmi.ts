@@ -21,6 +21,7 @@ const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "";
 // `maxPriorityFeePerGas = 0n` is safe — Arbitrum's sequencer doesn't run a
 // priority auction.
 export const FEE_OVERRIDES = {
+  gas:                  200_000_000n,
   maxFeePerGas:         1_000_000_000n, // 1 gwei ceiling
   maxPriorityFeePerGas: 0n,
 } as const;

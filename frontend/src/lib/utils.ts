@@ -18,10 +18,3 @@ export function formatUSD(value: number): string {
     maximumFractionDigits: 2,
   }).format(value);
 }
-
-export function formatToken(value: number, decimals = 4): string {
-  return new Intl.NumberFormat("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: decimals,
-  }).format(value);
-}

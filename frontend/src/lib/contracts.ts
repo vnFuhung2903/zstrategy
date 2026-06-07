@@ -5,7 +5,6 @@ export const ADDRESSES = {
   [arbitrumSepolia.id]: {
     commitmentRegistry: (process.env.NEXT_PUBLIC_COMMITMENT_REGISTRY_ADDRESS ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
     collateralVault:    (process.env.NEXT_PUBLIC_COLLATERAL_VAULT_ADDRESS    ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
-    gasVault:           (process.env.NEXT_PUBLIC_GAS_VAULT_ADDRESS           ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
   },
 } as const;
 
@@ -46,6 +45,27 @@ export const COMMITMENT_REGISTRY_ABI = [
       { name: "minOuts",          type: "uint256[]" },
       { name: "expiries",         type: "uint64[]"  },
       { name: "kind",             type: "uint8"     },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "executeCommitment",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "commitmentHash", type: "bytes32" },
+      { name: "nullifier",      type: "bytes32" },
+      { name: "proof",          type: "bytes"   },
+      { name: "fillRef",        type: "uint64"  },
+      {
+        name: "receipt",
+        type: "tuple",
+        components: [
+          { name: "proverId",        type: "bytes32" },
+          { name: "ticketExpiresAt", type: "uint64"  },
+          { name: "signature",       type: "bytes"   },
+        ],
+      },
     ],
     outputs: [],
   },
@@ -184,59 +204,6 @@ export const PRICE_FEED_ABI = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "uint8" }],
-  },
-] as const;
-
-// Gas tank — prepaid keeper-gas reimbursement. User funds in native ETH; the
-// registry debits this balance at executeCommitment time and forwards to the
-// keeper EOA with a flat KEEPER_PREMIUM_BPS premium.
-export const GAS_VAULT_ABI = [
-  {
-    type: "function",
-    name: "deposit",
-    stateMutability: "payable",
-    inputs: [],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "withdraw",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "amount", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "balanceOf",
-    stateMutability: "view",
-    inputs: [{ name: "user", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "event",
-    name: "Deposited",
-    inputs: [
-      { name: "user",   type: "address", indexed: true  },
-      { name: "amount", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "Withdrawn",
-    inputs: [
-      { name: "user",   type: "address", indexed: true  },
-      { name: "amount", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "Debited",
-    inputs: [
-      { name: "user",           type: "address", indexed: true  },
-      { name: "keeper",         type: "address", indexed: true  },
-      { name: "amount",         type: "uint256", indexed: false },
-      { name: "commitmentHash", type: "bytes32", indexed: true  },
-    ],
   },
 ] as const;
 
