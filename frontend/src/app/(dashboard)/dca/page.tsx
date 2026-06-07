@@ -13,9 +13,9 @@ import { Lock, Info, Loader2, AlertCircle, Repeat2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DEFAULT_PAIR, type TradingPair } from "@/lib/tradingPairs";
 import { useFreeBalance, formatUnits as fmtUnits } from "@/hooks/useVault";
-import { useGasBalance, PER_EXECUTION_ETH_ESTIMATE } from "@/hooks/useGasVault";
 import { useRegisterCommitmentBatch } from "@/hooks/useRegistry";
 import { dcaCommitmentHash, dcaNullifierHash, type DcaPreimageFields } from "@/lib/dcaCommitment";
+import { assertNonOverlappingDcaWindows, buildDcaSchedule, deriveDcaGroupLockId } from "@/lib/dcaSchedule";
 import {
   deriveIntentId,
   deriveUserSecret,
@@ -38,7 +38,7 @@ import { arbitrumSepolia } from "wagmi/chains";
 type Side = "BUY" | "SELL";
 
 const INTERVALS: Record<string, number> = {
-  "1 MIN": 60,
+  "3 MIN": 3 * 60,
   "6H":  6 * 3600,
   "24H": 86400,
   "7D":  7 * 86400,
@@ -46,17 +46,6 @@ const INTERVALS: Record<string, number> = {
 
 const JITTER  = 0.15; // ±15% of interval
 const DCA_KIND = 1;   // CommitmentKind.DCA
-
-function buildSchedule(roundCount: number, interval: number, now: number) {
-  return Array.from({ length: roundCount }, (_, i) => {
-    const center      = now + (i + 1) * interval;
-    const jitter      = Math.floor(JITTER * interval);
-    const scheduledLo = center - jitter;
-    const scheduledHi = center + jitter;
-    const expiry      = scheduledHi + interval;
-    return { scheduledLo, scheduledHi, expiry };
-  });
-}
 
 export default function DcaPage() {
   const { address, isConnected } = useAccount();
@@ -85,22 +74,13 @@ export default function DcaPage() {
   // useEffect(() => { setMinOutInput(""); }, [pair, side]);
 
   const { data: tokenInBalance } = useFreeBalance(tokenIn.address);
-  const { data: gasBalance }     = useGasBalance();
   const { registerBatch, isPending, isConfirming, isSuccess, error } = useRegisterCommitmentBatch();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
 
-  // DCA fires `roundCount` distinct executions over the schedule. Each one
-  // debits one PER_EXECUTION_ETH_ESTIMATE from the gas tank; gate submission
-  // until the user has at least that much prepaid. Treat the pre-query
-  // "undefined" state as a shortfall so the button is disabled until the
-  // balance read resolves (otherwise a fast clicker could submit early).
+  // DCA fires `roundCount` distinct executions over the schedule.
   const parsedRoundCount = Number.parseInt(roundCountInput, 10);
   const roundCount = Number.isInteger(parsedRoundCount) ? parsedRoundCount : 0;
   const roundCountValid = roundCount >= 2 && roundCount <= 10;
-
-  const gasNeeded   = PER_EXECUTION_ETH_ESTIMATE * BigInt(roundCountValid ? roundCount : 0);
-  const gasShortfall =
-    gasBalance === undefined || gasBalance < gasNeeded;
 
   const interval   = INTERVALS[intervalKey];
   const sizeBig    = useMemo(() => { try { return parseUnits(sizeInput || "0", tokenIn.decimals); } catch { return BigInt(0); } }, [sizeInput, tokenIn.decimals]);
@@ -116,12 +96,20 @@ export default function DcaPage() {
   }, []);
 
   const schedule = useMemo(
-    () => now === null || !roundCountValid ? [] : buildSchedule(roundCount, interval, now),
+    () => now === null || !roundCountValid ? [] : buildDcaSchedule(roundCount, interval, now, JITTER),
     [roundCount, roundCountValid, interval, now],
   );
+  const scheduleError = useMemo(() => {
+    try {
+      assertNonOverlappingDcaWindows(schedule);
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }, [schedule]);
 
   async function handleSubmit() {
-    if (!isConnected || !address || sizeBig === BigInt(0) || !roundCountValid) return;
+    if (!isConnected || !address || sizeBig === BigInt(0) || !roundCountValid || scheduleError) return;
     setSubmitError(null);
 
     try {
@@ -132,7 +120,8 @@ export default function DcaPage() {
       const userSecret = deriveUserSecret(signature);
 
       const currentNow = Math.floor(Date.now() / 1000);
-      const sched      = buildSchedule(roundCount, interval, currentNow);
+      const sched      = buildDcaSchedule(roundCount, interval, currentNow, JITTER);
+      assertNonOverlappingDcaWindows(sched);
       const roundNonces = Array.from({ length: roundCount }, () => randomBytes32());
 
       const hashes: `0x${string}`[]     = [];
@@ -154,11 +143,10 @@ export default function DcaPage() {
         nullifiers.push(dcaNullifierHash(userSecret, roundNonces[i]));
       }
 
-      const dcaGroupId      = intentId;
+      const dcaGroupLockId = deriveDcaGroupLockId(intentId, randomBytes32());
 
       const records: DcaRoundRecord[] = hashes.map((commitmentHash, i) => ({
         commitmentHash,
-        dcaGroupId,
         owner:       address.toLowerCase() as `0x${string}`,
         intentId,
         nonce:       roundNonces[i],
@@ -185,6 +173,7 @@ export default function DcaPage() {
           registry: registryAddr,
           commitmentHash: record.commitmentHash,
           kind: "DCA",
+          dcaGroupLockId,
           tokenIn: tokenIn.address,
           tokenOut: tokenOut.address,
           size: record.size,
@@ -198,7 +187,7 @@ export default function DcaPage() {
           nonce: record.nonce,
           userSecret,
           nullifier: record.nullifier,
-          dcaGroupId,
+          dcaGroupId: intentId,
           roundIndex: record.roundIndex,
         }, attestation);
       }));
@@ -208,6 +197,7 @@ export default function DcaPage() {
       setPostSynced(false);
       setPendingPost({
         chainId,
+        dcaGroupLockId,
         tokenIn:  tokenIn.address,
         tokenOut: tokenOut.address,
         rounds: records.map((r, i) => ({
@@ -244,7 +234,7 @@ export default function DcaPage() {
   }, [isSuccess, pendingPost, postSynced]);
 
   const busy = isPending || isConfirming || isSigning;
-  const errorMessage = submitError ?? (error ? (error as Error).message : null);
+  const errorMessage = submitError ?? scheduleError ?? (error ? (error as Error).message : null);
 
   const fmt = (ts: number) =>
     new Date(ts * 1000).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -387,12 +377,6 @@ export default function DcaPage() {
                   {errorMessage.slice(0, 160)}
                 </div>
               )}
-              {gasShortfall && (
-                <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
-                  <AlertCircle size={13} />
-                  Gas tank too low for {roundCount} executor fills — top up on the Vault page before submitting.
-                </div>
-              )}
 
               {/* Action — button stays in its ready state across submissions.
                   Success is announced via the global toast (Sonner) from the
@@ -413,14 +397,12 @@ export default function DcaPage() {
                   variant="sovereign"
                   size="md"
                   className="w-full sm:w-auto"
-                  disabled={!isConnected || busy || sizeBig === BigInt(0) || !roundCountValid || gasShortfall}
+                  disabled={!isConnected || busy || sizeBig === BigInt(0) || !roundCountValid || scheduleError !== null}
                   onClick={handleSubmit}
                 >
                   {busy
                     ? <><Loader2 size={14} className="animate-spin" />{isSigning ? "Signing…" : isConfirming ? "Confirming…" : "Submitting…"}</>
-                    : gasShortfall
-                      ? <><Lock size={14} />Top up gas tank</>
-                      : <><Lock size={14} />Sign &amp; Schedule DCA</>
+                    : <><Lock size={14} />Sign &amp; Schedule DCA</>
                   }
                 </Button>
               </div>
