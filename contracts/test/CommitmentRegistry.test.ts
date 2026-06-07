@@ -9,7 +9,6 @@ import {
   MockChainlinkAggregator,
   CollateralVault,
   CommitmentRegistry,
-  GasVault,
 } from "../typechain-types";
 
 describe("CommitmentRegistry", () => {
@@ -17,6 +16,8 @@ describe("CommitmentRegistry", () => {
   let user: SignerWithAddress;
   let keeper: SignerWithAddress;
   let other: SignerWithAddress;
+  let proverSigner: SignerWithAddress;
+  let proverPayout: SignerWithAddress;
 
   let tokenIn: MockERC20;
   let tokenOut: MockERC20;
@@ -25,7 +26,6 @@ describe("CommitmentRegistry", () => {
   let feedIn:  MockChainlinkAggregator;   // tokenIn (USDC) / USD
   let feedOut: MockChainlinkAggregator;   // tokenOut (WETH) / USD
   let vault: CollateralVault;
-  let gasVault: GasVault;
   let registry: CommitmentRegistry;
 
   const SIZE    = ethers.parseUnits("100", 6);   // 100 USDC
@@ -42,15 +42,14 @@ describe("CommitmentRegistry", () => {
   const DERIVED_PRICE   = 34482n;
   const ORDER_FILL  = 0;                         // CommitmentKind.ORDER_FILL
   const DCA         = 1;                         // CommitmentKind.DCA
-  const GAS_DEPOSIT = ethers.parseEther("0.05");
-  const TX_GAS_PRICE = ethers.parseUnits("1", "gwei");
+  const PROVER_ID   = ethers.keccak256(ethers.toUtf8Bytes("simulated-nitro-local"));
 
   let commitmentHash: string;
   let nullifier: string;
   let expiry: number;
 
   async function deploy() {
-    [guardian, user, keeper, other] = await ethers.getSigners();
+    [guardian, user, keeper, other, proverSigner, proverPayout] = await ethers.getSigners();
 
     const ERC20F = await ethers.getContractFactory("MockERC20");
     tokenIn  = (await ERC20F.deploy("Mock USDC", "USDC", 6))  as unknown as MockERC20;
@@ -73,23 +72,19 @@ describe("CommitmentRegistry", () => {
     const VaultF = await ethers.getContractFactory("CollateralVault");
     vault = (await VaultF.deploy()) as unknown as CollateralVault;
 
-    const GasVaultF = await ethers.getContractFactory("GasVault");
-    gasVault = (await GasVaultF.deploy()) as unknown as GasVault;
-
     const RegistryF = await ethers.getContractFactory("CommitmentRegistry");
     registry = (await RegistryF.deploy(
-      await gasVault.getAddress(),
       await vault.getAddress(),
       await dexAdapter.getAddress(),
       guardian.address
     )) as unknown as CommitmentRegistry;
 
     await vault.connect(guardian).setRegistry(await registry.getAddress());
-    await gasVault.connect(guardian).setRegistry(await registry.getAddress());
 
     await registry.connect(guardian).setVerifier(ORDER_FILL, await verifier.getAddress());
     await registry.connect(guardian).setPriceFeed(await tokenIn.getAddress(),  await feedIn.getAddress());
     await registry.connect(guardian).setPriceFeed(await tokenOut.getAddress(), await feedOut.getAddress());
+    await registry.connect(guardian).setProver(PROVER_ID, proverPayout.address, proverSigner.address, true);
 
     // Seed dexAdapter with tokenOut (output side of swaps)
     await tokenOut.mint(await dexAdapter.getAddress(), ethers.parseUnits("1000", 18));
@@ -97,7 +92,6 @@ describe("CommitmentRegistry", () => {
     // Mint tokenIn for user and approve vault
     await tokenIn.mint(user.address, SIZE * 100n);
     await tokenIn.connect(user).approve(await vault.getAddress(), SIZE * 100n);
-    await gasVault.connect(user).deposit({ value: GAS_DEPOSIT });
 
     expiry = (await time.latest()) + 86400;
     commitmentHash = ethers.keccak256(ethers.toUtf8Bytes("commitment-1"));
@@ -117,6 +111,62 @@ describe("CommitmentRegistry", () => {
       expiry,
       ORDER_FILL
     );
+  }
+
+  async function proverReceipt(
+    hash: string,
+    spentNullifier: string,
+    proof = PROOF,
+    fillRef: bigint | number = 0,
+    kind = ORDER_FILL,
+    ticketExpiresAt?: number,
+    proverId = PROVER_ID,
+    signer = proverSigner,
+  ) {
+    const expires = ticketExpiresAt ?? (await time.latest()) + 60;
+    const chainId = (await ethers.provider.getNetwork()).chainId;
+    const value = {
+      commitmentHash: hash,
+      nullifier: spentNullifier,
+      proofHash: ethers.keccak256(proof),
+      fillRef,
+      ticketExpiresAt: expires,
+      kind,
+      proverId,
+    };
+    const signature = await signer.signTypedData(
+      {
+        name: "zstrategy.ProverReceipt",
+        version: "1",
+        chainId,
+        verifyingContract: await registry.getAddress(),
+      },
+      {
+        ProverReceipt: [
+          { name: "commitmentHash", type: "bytes32" },
+          { name: "nullifier", type: "bytes32" },
+          { name: "proofHash", type: "bytes32" },
+          { name: "fillRef", type: "uint64" },
+          { name: "ticketExpiresAt", type: "uint64" },
+          { name: "kind", type: "uint8" },
+          { name: "proverId", type: "bytes32" },
+        ],
+      },
+      value,
+    );
+    return { proverId, ticketExpiresAt: expires, signature };
+  }
+
+  async function execute(
+    hash = commitmentHash,
+    spentNullifier = nullifier,
+    proof = PROOF,
+    fillRef: bigint | number = 0,
+    kind = ORDER_FILL,
+    caller = keeper,
+  ) {
+    const receipt = await proverReceipt(hash, spentNullifier, proof, fillRef, kind);
+    return registry.connect(caller).executeCommitment(hash, spentNullifier, proof, fillRef, receipt);
   }
 
   // ── registerCommitment ─────────────────────────────────────────────────
@@ -242,36 +292,208 @@ describe("CommitmentRegistry", () => {
     });
 
     it("executes with valid proof and marks EXECUTED", async () => {
-      await registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0);
+      await execute();
       expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(2); // EXECUTED
     });
 
     it("emits CommitmentExecuted", async () => {
       await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute()
       ).to.emit(registry, "CommitmentExecuted");
     });
 
     it("marks nullifier as spent", async () => {
-      await registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0);
+      await execute();
       expect(await registry.nullifiers(nullifier)).to.be.true;
     });
 
     it("sends tokenOut to commitment owner", async () => {
       const before = await tokenOut.balanceOf(user.address);
-      await registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0);
+      await execute();
       expect(await tokenOut.balanceOf(user.address)).to.equal(before + DEX_OUT);
+    });
+
+    it("splits output-token fees between executor, prover payout, and user", async () => {
+      await registry.connect(guardian).setFeeRates(100, 200);
+
+      const executorBefore = await tokenOut.balanceOf(keeper.address);
+      const proverBefore = await tokenOut.balanceOf(proverPayout.address);
+      const userBefore = await tokenOut.balanceOf(user.address);
+
+      await execute();
+
+      const executorFee = DEX_OUT * 100n / 10000n;
+      const proverFee = DEX_OUT * 200n / 10000n;
+      expect(await tokenOut.balanceOf(keeper.address)).to.equal(executorBefore + executorFee);
+      expect(await tokenOut.balanceOf(proverPayout.address)).to.equal(proverBefore + proverFee);
+      expect(await tokenOut.balanceOf(user.address)).to.equal(userBefore + DEX_OUT - executorFee - proverFee);
+    });
+
+    it("sends all gross output to the user when fee rates are zero", async () => {
+      const userBefore = await tokenOut.balanceOf(user.address);
+      await execute();
+      expect(await tokenOut.balanceOf(user.address)).to.equal(userBefore + DEX_OUT);
+      expect(await tokenOut.balanceOf(keeper.address)).to.equal(0);
+      expect(await tokenOut.balanceOf(proverPayout.address)).to.equal(0);
+    });
+
+    it("allows executor and prover payout to receive both fees at the same address", async () => {
+      await registry.connect(guardian).setProver(PROVER_ID, keeper.address, proverSigner.address, true);
+      await registry.connect(guardian).setFeeRates(100, 200);
+
+      const keeperBefore = await tokenOut.balanceOf(keeper.address);
+      await execute();
+
+      const executorFee = DEX_OUT * 100n / 10000n;
+      const proverFee = DEX_OUT * 200n / 10000n;
+      expect(await tokenOut.balanceOf(keeper.address)).to.equal(keeperBefore + executorFee + proverFee);
+    });
+
+    it("reverts when gross tokenOut is below minOut", async () => {
+      await dexAdapter.setMockAmountOut(MIN_OUT - 1n);
+
+      await expect(execute()).to.be.revertedWith("Registry: gross amount below minOut");
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1); // PENDING
+      expect(await registry.nullifiers(nullifier)).to.be.false;
     });
 
     it("reverts on invalid proof", async () => {
       await verifier.setShouldPass(false);
       await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute()
       ).to.be.revertedWith("Registry: invalid proof");
     });
 
+    it("reverts for unknown prover receipts", async () => {
+      const unknownProverId = ethers.keccak256(ethers.toUtf8Bytes("unknown-prover"));
+      const receipt = await proverReceipt(
+        commitmentHash,
+        nullifier,
+        PROOF,
+        0,
+        ORDER_FILL,
+        undefined,
+        unknownProverId,
+      );
+
+      await expect(
+        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0, receipt)
+      ).to.be.revertedWith("Registry: unknown prover");
+    });
+
+    it("reverts for inactive prover receipts", async () => {
+      await registry.connect(guardian).setProverActive(PROVER_ID, false);
+
+      await expect(execute()).to.be.revertedWith("Registry: inactive prover");
+    });
+
+    it("reverts for expired prover receipts", async () => {
+      const receipt = await proverReceipt(
+        commitmentHash,
+        nullifier,
+        PROOF,
+        0,
+        ORDER_FILL,
+        (await time.latest()) - 1,
+      );
+
+      await expect(
+        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0, receipt)
+      ).to.be.revertedWith("Registry: receipt expired");
+    });
+
+    it("reverts for receipts signed by the wrong signer", async () => {
+      const receipt = await proverReceipt(
+        commitmentHash,
+        nullifier,
+        PROOF,
+        0,
+        ORDER_FILL,
+        undefined,
+        PROVER_ID,
+        other,
+      );
+
+      await expect(
+        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0, receipt)
+      ).to.be.revertedWith("Registry: invalid prover signature");
+    });
+
+    it("reverts when the signed fillRef field is tampered", async () => {
+      const receipt = await proverReceipt(commitmentHash, nullifier, PROOF, 1, ORDER_FILL);
+
+      await expect(
+        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0, receipt)
+      ).to.be.revertedWith("Registry: invalid prover signature");
+    });
+
+    it("reverts when the signed proof hash is tampered", async () => {
+      const receipt = await proverReceipt(commitmentHash, nullifier, PROOF, 0, ORDER_FILL);
+      const otherProof = "0x" + "cd".repeat(256);
+
+      await expect(
+        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, otherProof, 0, receipt)
+      ).to.be.revertedWith("Registry: invalid prover signature");
+    });
+
+    it("reverts when the signed nullifier field is tampered", async () => {
+      const receipt = await proverReceipt(commitmentHash, nullifier, PROOF, 0, ORDER_FILL);
+      const otherNullifier = ethers.keccak256(ethers.toUtf8Bytes("other-nullifier"));
+
+      await expect(
+        registry.connect(keeper).executeCommitment(commitmentHash, otherNullifier, PROOF, 0, receipt)
+      ).to.be.revertedWith("Registry: invalid prover signature");
+    });
+
+    it("reverts when the signed commitment kind is tampered", async () => {
+      const receipt = await proverReceipt(commitmentHash, nullifier, PROOF, 0, DCA);
+
+      await expect(
+        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0, receipt)
+      ).to.be.revertedWith("Registry: invalid prover signature");
+    });
+
+    it("reverts when the signed proverId field is tampered", async () => {
+      const otherProverId = ethers.keccak256(ethers.toUtf8Bytes("other-prover"));
+      await registry.connect(guardian).setProver(otherProverId, proverPayout.address, proverSigner.address, true);
+      const receipt = await proverReceipt(commitmentHash, nullifier, PROOF, 0, ORDER_FILL);
+      const tamperedReceipt = { ...receipt, proverId: otherProverId };
+
+      await expect(
+        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0, tamperedReceipt)
+      ).to.be.revertedWith("Registry: invalid prover signature");
+    });
+
+    it("rolls back status, nullifier, and collateral when the DEX fill fails", async () => {
+      await dexAdapter.setMockAmountOut(0);
+
+      await expect(
+        execute()
+      ).to.be.revertedWith("MockDEX: swap disabled");
+
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1); // PENDING
+      expect(await registry.nullifiers(nullifier)).to.be.false;
+      expect(await vault.lockedBalance(commitmentHash, await tokenIn.getAddress())).to.equal(SIZE);
+    });
+
+    it("rolls back output transfer when the DEX reverts after partial progress", async () => {
+      const userTokenOutBefore = await tokenOut.balanceOf(user.address);
+      const adapterTokenInBefore = await tokenIn.balanceOf(await dexAdapter.getAddress());
+      await (dexAdapter as any).setRevertAfterTransfer(true);
+
+      await expect(
+        execute()
+      ).to.be.revertedWith("MockDEX: post-transfer failure");
+
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1); // PENDING
+      expect(await registry.nullifiers(nullifier)).to.be.false;
+      expect(await vault.lockedBalance(commitmentHash, await tokenIn.getAddress())).to.equal(SIZE);
+      expect(await tokenOut.balanceOf(user.address)).to.equal(userTokenOutBefore);
+      expect(await tokenIn.balanceOf(await dexAdapter.getAddress())).to.equal(adapterTokenInBefore);
+    });
+
     it("reverts on spent nullifier", async () => {
-      await registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0);
+      await execute();
 
       const h2 = ethers.keccak256(ethers.toUtf8Bytes("commitment-2"));
       await vault.connect(user).deposit(await tokenIn.getAddress(), SIZE);
@@ -281,42 +503,42 @@ describe("CommitmentRegistry", () => {
       await tokenIn.mint(await dexAdapter.getAddress(), SIZE);
 
       await expect(
-        registry.connect(keeper).executeCommitment(h2, nullifier, PROOF, 0)
+        execute(h2, nullifier)
       ).to.be.revertedWith("Registry: nullifier spent");
     });
 
     it("reverts on expired commitment", async () => {
       await time.increaseTo(expiry + 1);
       await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute()
       ).to.be.revertedWith("Registry: expired");
     });
 
     it("reverts when paused", async () => {
       await registry.connect(guardian).pause();
       await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute()
       ).to.be.revertedWith("Registry: paused");
     });
 
     it("reverts on double-execute", async () => {
-      await registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0);
+      await execute();
       const n2 = ethers.keccak256(ethers.toUtf8Bytes("nullifier-2"));
       await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, n2, PROOF, 0)
+        execute(commitmentHash, n2)
       ).to.be.revertedWith("Registry: not pending");
     });
 
     it("self-execution: user can execute without keeper", async () => {
       await tokenIn.mint(await dexAdapter.getAddress(), SIZE); // extra for this test
       await expect(
-        registry.connect(user).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute(commitmentHash, nullifier, PROOF, 0, ORDER_FILL, user)
       ).to.emit(registry, "CommitmentExecuted");
     });
 
     it("emits the derived oracle price in CommitmentExecuted", async () => {
       await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute()
       ).to.emit(registry, "CommitmentExecuted")
        .withArgs(commitmentHash, user.address, keeper.address, nullifier, DERIVED_PRICE, DEX_OUT, ORDER_FILL);
     });
@@ -324,7 +546,7 @@ describe("CommitmentRegistry", () => {
     it("audit-logs the executor address in CommitmentExecuted", async () => {
       await tokenIn.mint(await dexAdapter.getAddress(), SIZE);
       await expect(
-        registry.connect(user).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute(commitmentHash, nullifier, PROOF, 0, ORDER_FILL, user)
       ).to.emit(registry, "CommitmentExecuted")
        .withArgs(commitmentHash, user.address, user.address, nullifier, DERIVED_PRICE, DEX_OUT, ORDER_FILL);
     });
@@ -332,14 +554,14 @@ describe("CommitmentRegistry", () => {
     it("reverts when no USD feed is configured for tokenIn", async () => {
       await registry.connect(guardian).setPriceFeed(await tokenIn.getAddress(), ethers.ZeroAddress);
       await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute()
       ).to.be.revertedWith("Registry: no USD feed for tokenIn");
     });
 
     it("reverts on non-positive tokenIn oracle answer", async () => {
       await feedIn.setAnswer(0);
       await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute()
       ).to.be.revertedWith("Registry: invalid tokenIn oracle answer");
     });
 
@@ -348,7 +570,7 @@ describe("CommitmentRegistry", () => {
       await feedOut.setAnswer(100000000n);
       await feedIn.setAnswer(BigInt("18446744073709551616")); // 2^64
       await expect(
-        registry.connect(keeper).executeCommitment(commitmentHash, nullifier, PROOF, 0)
+        execute()
       ).to.be.revertedWith("Registry: oracle price overflow");
     });
 
@@ -364,7 +586,7 @@ describe("CommitmentRegistry", () => {
 
       const fillRef = await time.latest();
       await expect(
-        registry.connect(keeper).executeCommitment(h, n, PROOF, fillRef)
+        execute(h, n, PROOF, fillRef, DCA)
       ).to.emit(registry, "CommitmentExecuted")
        .withArgs(h, user.address, keeper.address, n, fillRef, DEX_OUT, DCA);
     });
@@ -379,7 +601,7 @@ describe("CommitmentRegistry", () => {
       );
 
       await expect(
-        registry.connect(keeper).executeCommitment(h, n, PROOF, (await time.latest()) + 60)
+        execute(h, n, PROOF, (await time.latest()) + 60, DCA)
       ).to.be.revertedWith("Registry: DCA fillRef in future");
     });
 
@@ -393,7 +615,7 @@ describe("CommitmentRegistry", () => {
       );
 
       await expect(
-        registry.connect(keeper).executeCommitment(h, n, PROOF, (await time.latest()) - 301)
+        execute(h, n, PROOF, (await time.latest()) - 301, DCA)
       ).to.be.revertedWith("Registry: DCA fillRef stale");
     });
   });
@@ -555,77 +777,39 @@ describe("CommitmentRegistry", () => {
 
   // ── executeCommitment with gas tank wired ──────────────────────────────
   //
-  // All keeper executions use the wired GasVault reimbursement path.
+  // Phase E registry admin controls for prover receipts and fee rates.
 
-  describe("executeCommitment (gas tank wired)", () => {
-    beforeEach(async () => {
-      await registerOne();
-      await tokenIn.mint(await dexAdapter.getAddress(), SIZE);
-    });
-
-    it("debits owner's gas balance and forwards ETH to keeper", async () => {
-      const before = await gasVault.balanceOf(user.address);
-      const tx = await registry.connect(keeper).executeCommitment(
-        commitmentHash, nullifier, PROOF, 0, { gasPrice: TX_GAS_PRICE }
-      );
-      await tx.wait();
-      const after = await gasVault.balanceOf(user.address);
-      expect(after).to.be.lt(before);                 // user debited
-      expect(before - after).to.be.gt(0n);            // non-zero cost
-    });
-
-    it("emits Debited with the commitmentHash", async () => {
-      await expect(
-        registry.connect(keeper).executeCommitment(
-          commitmentHash, nullifier, PROOF, 0, { gasPrice: TX_GAS_PRICE }
-        )
-      ).to.emit(gasVault, "Debited");
-    });
-
-    it("self-execution by owner skips the debit", async () => {
-      const before = await gasVault.balanceOf(user.address);
-      await registry.connect(user).executeCommitment(
-        commitmentHash, nullifier, PROOF, 0, { gasPrice: TX_GAS_PRICE }
-      );
-      const after = await gasVault.balanceOf(user.address);
-      expect(after).to.equal(before);                 // no debit on self-execute
-    });
-
-    it("reverts when owner's gas balance is insufficient", async () => {
-      // Drain owner's gas tank first
-      const balance = await gasVault.balanceOf(user.address);
-      await gasVault.connect(user).withdraw(balance);
+  describe("Phase E admin controls", () => {
+    it("guardian can update prover payout, signer, and active status", async () => {
+      const nextProverId = ethers.keccak256(ethers.toUtf8Bytes("next-prover"));
 
       await expect(
-        registry.connect(keeper).executeCommitment(
-          commitmentHash, nullifier, PROOF, 0, { gasPrice: TX_GAS_PRICE }
-        )
-      ).to.be.revertedWith("GasVault: insufficient gas balance");
+        registry.connect(guardian).setProver(nextProverId, user.address, other.address, true)
+      ).to.emit(registry, "ProverSet")
+       .withArgs(nextProverId, user.address, other.address, true);
+
+      const prover = await registry.provers(nextProverId);
+      expect(prover.payout).to.equal(user.address);
+      expect(prover.signer).to.equal(other.address);
+      expect(prover.active).to.equal(true);
     });
 
-    it("guardian can replace the gas vault", async () => {
-      const GasVaultF = await ethers.getContractFactory("GasVault");
-      const newGasVault = (await GasVaultF.deploy()) as unknown as GasVault;
-      await newGasVault.connect(guardian).setRegistry(await registry.getAddress());
-
+    it("non-guardian cannot update prover settings or fee rates", async () => {
       await expect(
-        registry.connect(guardian).setGasVault(await newGasVault.getAddress())
-      ).to.emit(registry, "GasVaultChanged");
-      expect(await registry.gasVault()).to.equal(await newGasVault.getAddress());
-    });
-
-    it("guardian cannot set a zero gas vault", async () => {
-      await expect(
-        registry.connect(guardian).setGasVault(ethers.ZeroAddress)
-      ).to.be.revertedWith("Registry: zero vault");
-    });
-
-    it("non-guardian cannot set the gas vault", async () => {
-      const GasVaultF = await ethers.getContractFactory("GasVault");
-      const newGasVault = (await GasVaultF.deploy()) as unknown as GasVault;
-      await expect(
-        registry.connect(other).setGasVault(await newGasVault.getAddress())
+        registry.connect(other).setProver(PROVER_ID, user.address, other.address, true)
       ).to.be.revertedWith("Registry: caller not guardian");
+      await expect(
+        registry.connect(other).setFeeRates(100, 100)
+      ).to.be.revertedWith("Registry: caller not guardian");
+    });
+
+    it("enforces executor and prover fee caps", async () => {
+      await expect(
+        registry.connect(guardian).setFeeRates(501, 0)
+      ).to.be.revertedWith("Registry: executor fee too high");
+      await expect(
+        registry.connect(guardian).setFeeRates(0, 501)
+      ).to.be.revertedWith("Registry: prover fee too high");
     });
   });
 });

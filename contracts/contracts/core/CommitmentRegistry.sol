@@ -2,11 +2,14 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import "../interfaces/IVerifier.sol";
 import "../interfaces/IDEXAdapter.sol";
 import "../interfaces/IPriceFeed.sol";
 import "./CollateralVault.sol";
-import "./GasVault.sol";
 
 /// @title CommitmentRegistry
 /// @notice Trust root of zstrategy. Stores privacy-preserving trading commitments
@@ -16,7 +19,8 @@ import "./GasVault.sol";
 ///   NONE → PENDING → EXECUTED
 ///                  → CANCELLED
 ///                  → EXPIRED  (via sweepExpired)
-contract CommitmentRegistry is ReentrancyGuard {
+contract CommitmentRegistry is ReentrancyGuard, EIP712 {
+    using SafeERC20 for IERC20;
 
     // ── Enums & Structs ────────────────────────────────────────────────────
 
@@ -43,6 +47,25 @@ contract CommitmentRegistry is ReentrancyGuard {
         uint256 minOut;           // Minimum tokenOut (slippage protection; encrypted pre-execution)
     }
 
+    struct Prover {
+        address payout;
+        address signer;
+        bool active;
+    }
+
+    struct ProverReceipt {
+        bytes32 proverId;
+        uint64 ticketExpiresAt;
+        bytes signature;
+    }
+
+    struct SettlementAmounts {
+        uint256 grossAmountOut;
+        uint256 executorFee;
+        uint256 proverFee;
+        uint256 userAmount;
+    }
+
     // ── State ──────────────────────────────────────────────────────────────
 
     /// @notice Per-kind verifier registry. Set via setVerifier(); never immutable so
@@ -52,20 +75,16 @@ contract CommitmentRegistry is ReentrancyGuard {
     mapping(uint8 => IVerifier) public verifiers;
     CollateralVault public vault;
     IDEXAdapter public dexAdapter;
-
-    /// @notice Prepaid gas-tank vault. When set, executeCommitment debits the
-    ///         strategy owner's balance and forwards ETH to the keeper EOA
-    ///         (`msg.sender`) at fill time. Self-execution (owner == sender)
-    ///         skips the debit. Zero address means the gas tank is disabled —
-    ///         used for older test fixtures that don't deploy GasVault.
-    GasVault public gasVault;
-
     address public guardian;
     bool public paused;
-
-    /// @notice Keeper reimbursement = gasUsed × tx.gasprice × (BPS / 10000).
-    ///         12000 = 120% — flat 20% premium over raw cost.
-    uint256 public constant KEEPER_PREMIUM_BPS = 12000;
+    bytes32 public constant PROVER_RECEIPT_TYPEHASH = keccak256(
+        "ProverReceipt(bytes32 commitmentHash,bytes32 nullifier,bytes32 proofHash,uint64 fillRef,uint64 ticketExpiresAt,uint8 kind,bytes32 proverId)"
+    );
+    uint16 public constant MAX_EXECUTOR_FEE_BPS = 500;
+    uint16 public constant MAX_PROVER_FEE_BPS = 500;
+    uint16 public constant MAX_TOTAL_FEE_BPS = 1000;
+    uint16 public executorFeeBps;
+    uint16 public proverFeeBps;
 
     /// @notice DCA proofs use a keeper-chosen execution timestamp. Settlement
     ///         must follow soon after so the timestamp remains anchored to the
@@ -80,6 +99,7 @@ contract CommitmentRegistry is ReentrancyGuard {
     ///         its price denominated in USD. The pair price (tokenIn/tokenOut) is derived
     ///         on-chain: price = (tokenIn_USD / tokenOut_USD) with tokenOut feed decimals precision.
     mapping(address token => IPriceFeed) public priceFeeds;
+    mapping(bytes32 proverId => Prover) public provers;
     mapping(bytes32 => CommitmentRecord) private commitments;
     mapping(bytes32 => bool)             public nullifiers;
 
@@ -104,11 +124,23 @@ contract CommitmentRegistry is ReentrancyGuard {
         uint256        amountOut,
         CommitmentKind kind
     );
+    event ExecutionFeesPaid(
+        bytes32 indexed commitmentHash,
+        address indexed executor,
+        bytes32 indexed proverId,
+        address proverPayout,
+        uint256 grossAmountOut,
+        uint256 executorFee,
+        uint256 proverFee,
+        uint256 userAmount
+    );
+    event ProverSet(bytes32 indexed proverId, address indexed payout, address indexed signer, bool active);
+    event ProverActiveSet(bytes32 indexed proverId, bool active);
+    event FeeRatesSet(uint16 executorFeeBps, uint16 proverFeeBps);
     event CommitmentCancelled(bytes32 indexed commitmentHash, address indexed owner);
     event CommitmentExpired(bytes32 indexed commitmentHash, address indexed owner);
     event DEXAdapterChanged(address indexed oldAdapter, address indexed newAdapter);
     event CollateralVaultChanged(address indexed oldVault, address indexed newVault);
-    event GasVaultChanged(address indexed oldVault, address indexed newVault);
     event PriceFeedSet(address indexed token, address indexed feed);
     event OracleStalenessSet(uint256 oldValue, uint256 newValue);
     event Paused(address indexed guardian);
@@ -117,17 +149,14 @@ contract CommitmentRegistry is ReentrancyGuard {
     // ── Constructor ────────────────────────────────────────────────────────
 
     constructor(
-        address _gas_vault,
         address _collateral_vault,
         address _dexAdapter,
         address _guardian
-    ) {
-        require(_gas_vault != address(0), "Registry: zero gas vault");
+    ) EIP712("zstrategy.ProverReceipt", "1") {
         require(_collateral_vault != address(0), "Registry: zero vault");
         require(_dexAdapter != address(0), "Registry: zero adapter");
         require(_guardian != address(0), "Registry: zero guardian");
 
-        gasVault   = GasVault(payable(_gas_vault));
         vault      = CollateralVault(_collateral_vault);
         dexAdapter = IDEXAdapter(_dexAdapter);
         guardian   = _guardian;
@@ -254,13 +283,14 @@ contract CommitmentRegistry is ReentrancyGuard {
     /// @param nullifier       Prevents double-execution (public output of ZK circuit).
     /// @param proof           Serialised UltraPlonk proof bytes.
     /// @param fillRef         DCA execution timestamp. Ignored for ORDER_FILL.
+    /// @param receipt         Prover authorization receipt for this execution ticket.
     function executeCommitment(
         bytes32 commitmentHash,
         bytes32 nullifier,
         bytes calldata proof,
-        uint64 fillRef
+        uint64 fillRef,
+        ProverReceipt calldata receipt
     ) external nonReentrant whenNotPaused {
-        uint256 gasStart = gasleft();
         CommitmentRecord storage c = commitments[commitmentHash];
 
         require(c.status == CommitmentStatus.PENDING, "Registry: not pending");
@@ -269,6 +299,15 @@ contract CommitmentRegistry is ReentrancyGuard {
 
         IVerifier kv = verifiers[uint8(c.kind)];
         require(address(kv) != address(0), "Registry: verifier not set for kind");
+        uint64 submittedFillRef = fillRef;
+        address proverPayout = _verifyProverReceipt(
+            commitmentHash,
+            nullifier,
+            proof,
+            submittedFillRef,
+            c.kind,
+            receipt
+        );
 
         // ── Build public inputs and read fill-time reference value ─────────
         // Public input layout is identical for both circuits:
@@ -303,24 +342,79 @@ contract CommitmentRegistry is ReentrancyGuard {
         c.status = CommitmentStatus.EXECUTED;
 
         // ── Release collateral to DEX adapter and swap ────────────────────
-        vault.releaseForExecution(commitmentHash, c.tokenIn, c.size, address(dexAdapter));
+        SettlementAmounts memory amounts = _swapAndDistribute(commitmentHash, c, proverPayout);
 
-        uint256 amountOut = dexAdapter.swap(
-            c.tokenIn,
-            c.tokenOut,
-            c.size,
-            c.minOut,
-            c.owner
+        // Phase E v2 execution settles fees from gross tokenOut. No GasVault
+        // debit occurs on this public executor path.
+        emit CommitmentExecuted(commitmentHash, c.owner, msg.sender, nullifier, fillRef, amounts.grossAmountOut, c.kind);
+        emit ExecutionFeesPaid(
+            commitmentHash,
+            msg.sender,
+            receipt.proverId,
+            proverPayout,
+            amounts.grossAmountOut,
+            amounts.executorFee,
+            amounts.proverFee,
+            amounts.userAmount
         );
+    }
 
-        // ── Gas-tank debit ────────────────────────────────────────────────
-        // Reimburse the keeper from the owner's prepaid ETH balance with a
-        // flat KEEPER_PREMIUM_BPS premium. Skipped on self-execute (refunding
-        // to oneself just burns gas). Extracted to a helper to keep
-        // executeCommitment under Solidity's stack-depth limit.
-        _debitGas(c.owner, gasStart, commitmentHash);
+    function _verifyProverReceipt(
+        bytes32 commitmentHash,
+        bytes32 nullifier,
+        bytes calldata proof,
+        uint64 submittedFillRef,
+        CommitmentKind kind,
+        ProverReceipt calldata receipt
+    ) internal view returns (address payout) {
+        require(block.timestamp <= receipt.ticketExpiresAt, "Registry: receipt expired");
 
-        emit CommitmentExecuted(commitmentHash, c.owner, msg.sender, nullifier, fillRef, amountOut, c.kind);
+        Prover memory prover = provers[receipt.proverId];
+        require(prover.signer != address(0) && prover.payout != address(0), "Registry: unknown prover");
+        require(prover.active, "Registry: inactive prover");
+
+        bytes32 structHash = keccak256(abi.encode(
+            PROVER_RECEIPT_TYPEHASH,
+            commitmentHash,
+            nullifier,
+            keccak256(proof),
+            submittedFillRef,
+            receipt.ticketExpiresAt,
+            uint8(kind),
+            receipt.proverId
+        ));
+        address recovered = ECDSA.recover(_hashTypedDataV4(structHash), receipt.signature);
+        require(recovered == prover.signer, "Registry: invalid prover signature");
+
+        return prover.payout;
+    }
+
+    function _swapAndDistribute(
+        bytes32 commitmentHash,
+        CommitmentRecord storage c,
+        address proverPayout
+    ) internal returns (SettlementAmounts memory amounts) {
+        IERC20 outToken = IERC20(c.tokenOut);
+        uint256 balanceBefore = outToken.balanceOf(address(this));
+
+        vault.releaseForExecution(commitmentHash, c.tokenIn, c.size, address(dexAdapter));
+        dexAdapter.swap(c.tokenIn, c.tokenOut, c.size, 0, address(this));
+
+        amounts.grossAmountOut = outToken.balanceOf(address(this)) - balanceBefore;
+        require(amounts.grossAmountOut >= c.minOut, "Registry: gross amount below minOut");
+
+        amounts.executorFee = (amounts.grossAmountOut * executorFeeBps) / 10000;
+        amounts.proverFee = (amounts.grossAmountOut * proverFeeBps) / 10000;
+        amounts.userAmount = amounts.grossAmountOut - amounts.executorFee - amounts.proverFee;
+
+        _safeTransferIfNonZero(outToken, msg.sender, amounts.executorFee);
+        _safeTransferIfNonZero(outToken, proverPayout, amounts.proverFee);
+        _safeTransferIfNonZero(outToken, c.owner, amounts.userAmount);
+    }
+
+    function _safeTransferIfNonZero(IERC20 token, address recipient, uint256 amount) internal {
+        if (amount == 0) return;
+        token.safeTransfer(recipient, amount);
     }
 
     /// @dev Derive the tokenIn/tokenOut price from two Chainlink USD feeds.
@@ -434,16 +528,37 @@ contract CommitmentRegistry is ReentrancyGuard {
         dexAdapter = IDEXAdapter(newAdapter);
     }
 
-    function setGasVault(address newVault) external onlyGuardian {
-        require(newVault != address(0), "Registry: zero vault");
-        emit GasVaultChanged(address(gasVault), newVault);
-        gasVault = GasVault(payable(newVault));
-    }
-
     function setCollateralVault(address newVault) external onlyGuardian {
         require(newVault != address(0), "Registry: zero vault");
         emit CollateralVaultChanged(address(vault), newVault);
         vault = CollateralVault(payable(newVault));
+    }
+
+    function setProver(bytes32 proverId, address payout, address signer, bool active) external onlyGuardian {
+        require(proverId != bytes32(0), "Registry: zero proverId");
+        require(payout != address(0), "Registry: zero payout");
+        require(signer != address(0), "Registry: zero signer");
+        provers[proverId] = Prover({ payout: payout, signer: signer, active: active });
+        emit ProverSet(proverId, payout, signer, active);
+    }
+
+    function setProverActive(bytes32 proverId, bool active) external onlyGuardian {
+        Prover storage prover = provers[proverId];
+        require(prover.signer != address(0) && prover.payout != address(0), "Registry: unknown prover");
+        prover.active = active;
+        emit ProverActiveSet(proverId, active);
+    }
+
+    function setFeeRates(uint16 newExecutorFeeBps, uint16 newProverFeeBps) external onlyGuardian {
+        require(newExecutorFeeBps <= MAX_EXECUTOR_FEE_BPS, "Registry: executor fee too high");
+        require(newProverFeeBps <= MAX_PROVER_FEE_BPS, "Registry: prover fee too high");
+        require(
+            uint256(newExecutorFeeBps) + uint256(newProverFeeBps) <= MAX_TOTAL_FEE_BPS,
+            "Registry: total fee too high"
+        );
+        executorFeeBps = newExecutorFeeBps;
+        proverFeeBps = newProverFeeBps;
+        emit FeeRatesSet(newExecutorFeeBps, newProverFeeBps);
     }
 
     function setGuardian(address newGuardian) external onlyGuardian {
@@ -455,7 +570,6 @@ contract CommitmentRegistry is ReentrancyGuard {
     ///         Pass the zero address to remove the feed.
     function setPriceFeed(address token, address feed) external onlyGuardian {
         require(token != address(0), "Registry: zero token");
-
         priceFeeds[token] = IPriceFeed(feed);
         emit PriceFeedSet(token, feed);
     }
@@ -478,13 +592,4 @@ contract CommitmentRegistry is ReentrancyGuard {
         emit VerifierSet(kind, verifier);
     }
 
-    // ── Internal ───────────────────────────────────────────────────────────
-
-    /// @dev Compute reimbursement cost and forward it to the keeper EOA.
-    ///      No-op when the owner self-executed.
-    function _debitGas(address owner_, uint256 gasStart, bytes32 commitmentHash) internal {
-        if (msg.sender == owner_) return;
-        uint256 cost = ((gasStart - gasleft()) * tx.gasprice * KEEPER_PREMIUM_BPS) / 10000;
-        gasVault.debit(owner_, payable(msg.sender), cost, commitmentHash);
-    }
 }
