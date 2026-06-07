@@ -145,7 +145,7 @@ type executionTicketResponse struct {
 }
 
 func (h *Handler) ListExecutionTickets(c *gin.Context) {
-	tickets, err := h.readyExecutionTickets(c, "")
+	tickets, err := h.readyExecutionTickets(c, "", "")
 	if err != nil {
 		errResponse(c, err)
 		return
@@ -157,11 +157,12 @@ func (h *Handler) ListExecutionTickets(c *gin.Context) {
 }
 
 type claimExecutionTicketBody struct {
-	Executor string `json:"executor"`
+	Executor       string `json:"executor"`
+	CommitmentHash string `json:"commitmentHash"`
 }
 
 func (h *Handler) ClaimExecutionTicket(c *gin.Context) {
-	leaseOwner, valid := claimExecutor(c)
+	leaseOwner, targetCommitmentHash, valid := claimRequest(c)
 	if !valid {
 		return
 	}
@@ -170,16 +171,21 @@ func (h *Handler) ClaimExecutionTicket(c *gin.Context) {
 		return
 	}
 
-	tickets, err := h.readyExecutionTickets(c, leaseOwner)
+	tickets, err := h.readyExecutionTickets(c, leaseOwner, targetCommitmentHash)
 	if err != nil {
 		errResponse(c, err)
 		return
 	}
 	if len(tickets) == 0 {
+		if targetCommitmentHash != "" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "execution ticket not ready for commitment"})
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "no execution tickets ready"})
 		return
 	}
 
+	var lastUnclaimableReason string
 	for i := range tickets {
 		now := time.Now()
 		leaseExpiresAt := now.Add(executorTicketLeaseDuration)
@@ -208,7 +214,15 @@ func (h *Handler) ClaimExecutionTicket(c *gin.Context) {
 			return
 		}
 
+		lastUnclaimableReason = strings.TrimSpace(check.Reason)
 		h.handleUnclaimableTicket(c.Request.Context(), tickets[i], check)
+	}
+	if lastUnclaimableReason != "" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  "execution ticket is not currently claimable",
+			"reason": lastUnclaimableReason,
+		})
+		return
 	}
 	c.JSON(http.StatusNotFound, gin.H{"error": "no execution tickets ready"})
 }
@@ -242,18 +256,26 @@ func (h *Handler) handleUnclaimableTicket(ctx context.Context, ticket executionT
 	}
 }
 
-func (h *Handler) readyExecutionTickets(c *gin.Context, leaseOwner string) ([]executionTicketResponse, error) {
+func (h *Handler) readyExecutionTickets(c *gin.Context, leaseOwner, targetCommitmentHash string) ([]executionTicketResponse, error) {
 	chainID := parseChainID(c)
 	limit := ticketLimit(c)
+	targetCommitmentHash = strings.TrimSpace(targetCommitmentHash)
 	intents, err := h.intentRepo.ListTicketReady(c.Request.Context())
 	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now()
-	out := make([]executionTicketResponse, 0, min(limit, len(intents)))
+	capacity := min(limit, len(intents))
+	if targetCommitmentHash != "" {
+		capacity = 1
+	}
+	out := make([]executionTicketResponse, 0, capacity)
 	for _, intent := range intents {
 		if intent.ChainID != chainID {
+			continue
+		}
+		if targetCommitmentHash != "" && !strings.EqualFold(intent.CommitmentHash, targetCommitmentHash) {
 			continue
 		}
 		if !ticketLeaseAvailable(intent, now, leaseOwner) {
@@ -264,35 +286,56 @@ func (h *Handler) readyExecutionTickets(c *gin.Context, leaseOwner string) ([]ex
 			continue
 		}
 		out = append(out, ticket)
-		if len(out) >= limit {
+		if targetCommitmentHash != "" || len(out) >= limit {
 			break
 		}
 	}
 	return out, nil
 }
 
-func claimExecutor(c *gin.Context) (string, bool) {
+func claimRequest(c *gin.Context) (string, string, bool) {
 	var body claimExecutionTicketBody
 	if c.Request.Body != nil {
 		if err := c.ShouldBindJSON(&body); err != nil && err != io.EOF {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid body: %v", err)})
-			return "", false
+			return "", "", false
 		}
 	}
 	executor := strings.TrimSpace(body.Executor)
 	if executor == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "executor is required for claim simulation"})
-		return "", false
+		return "", "", false
 	}
 	if executor != "" && !isHexAddress(executor) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "executor must be an EVM address"})
-		return "", false
+		return "", "", false
 	}
-	return strings.ToLower(executor), true
+	commitmentHash := strings.TrimSpace(body.CommitmentHash)
+	if commitmentHash != "" && !isHexBytes32(commitmentHash) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "commitmentHash must be bytes32 hex"})
+		return "", "", false
+	}
+	return strings.ToLower(executor), strings.ToLower(commitmentHash), true
 }
 
 func isHexAddress(value string) bool {
 	if len(value) != 42 || !strings.HasPrefix(value, "0x") {
+		return false
+	}
+	for _, r := range value[2:] {
+		if !unicode.IsDigit(r) && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexBytes32(value string) bool {
+	return len(value) == 66 && isHexData(value)
+}
+
+func isHexData(value string) bool {
+	if len(value) < 2 || !strings.HasPrefix(value, "0x") || len(value)%2 != 0 {
 		return false
 	}
 	for _, r := range value[2:] {
@@ -313,7 +356,7 @@ func ticketLeaseAvailable(intent *domain.PendingIntent, now time.Time, leaseOwne
 func executionTicketFromPendingIntent(intent *domain.PendingIntent, now time.Time) (executionTicketResponse, bool) {
 	if intent == nil ||
 		intent.Status != domain.IntentTicketReady ||
-		intent.Ticket == "" ||
+		intent.Ticket == "null" ||
 		intent.TicketExpiresAt == nil ||
 		!intent.TicketExpiresAt.After(now) {
 		return executionTicketResponse{}, false
@@ -331,7 +374,11 @@ func executionTicketFromPendingIntent(intent *domain.PendingIntent, now time.Tim
 		!ticketFillRefValid(ticket.Kind, ticket.FillRef) ||
 		ticket.PackageHash == "" ||
 		ticket.Proof == "" ||
-		ticket.Nullifier == "" {
+		ticket.Nullifier == "" ||
+		!isHexBytes32(ticket.ProverID) ||
+		!strings.EqualFold(ticket.ProverReceipt.ProverID, ticket.ProverID) ||
+		ticket.ProverReceipt.TicketExpiresAt != ticket.TicketExpiresAt ||
+		!isHexData(ticket.ProverReceipt.Signature) {
 		return executionTicketResponse{}, false
 	}
 
@@ -466,10 +513,11 @@ func (h *Handler) RegisterOrderIntent(c *gin.Context) {
 }
 
 type registerDcaIntentBody struct {
-	ChainID  int64           `json:"chainId"`
-	TokenIn  string          `json:"tokenIn"`
-	TokenOut string          `json:"tokenOut"`
-	Rounds   []dcaRoundInput `json:"rounds"`
+	ChainID        int64           `json:"chainId"`
+	DCAGroupLockID string          `json:"dcaGroupLockId"`
+	TokenIn        string          `json:"tokenIn"`
+	TokenOut       string          `json:"tokenOut"`
+	Rounds         []dcaRoundInput `json:"rounds"`
 }
 
 type dcaRoundInput struct {
@@ -487,10 +535,11 @@ func (h *Handler) RegisterDcaIntent(c *gin.Context) {
 		return
 	}
 
-	if body.TokenIn == "" || body.TokenOut == "" || len(body.Rounds) == 0 {
+	if body.TokenIn == "" || body.TokenOut == "" || len(body.Rounds) == 0 || !isHexBytes32(body.DCAGroupLockID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing required fields"})
 		return
 	}
+	dcaGroupLockID := strings.ToLower(body.DCAGroupLockID)
 
 	intents := make([]*domain.PendingIntent, 0, len(body.Rounds))
 	for _, round := range body.Rounds {
@@ -503,6 +552,7 @@ func (h *Handler) RegisterDcaIntent(c *gin.Context) {
 			registry:       round.WitnessPackage.AAD.Registry,
 			commitmentHash: round.CommitmentHash,
 			circuitKind:    domain.CircuitKindDCA,
+			dcaGroupLockID: dcaGroupLockID,
 			tokenIn:        body.TokenIn,
 			tokenOut:       body.TokenOut,
 			size:           round.Size,
@@ -522,6 +572,7 @@ func (h *Handler) RegisterDcaIntent(c *gin.Context) {
 			ChainID:        body.ChainID,
 			Registry:       round.WitnessPackage.AAD.Registry,
 			Kind:           domain.KindDCA,
+			DCAGroupLockID: dcaGroupLockID,
 			TokenIn:        body.TokenIn,
 			TokenOut:       body.TokenOut,
 			Size:           round.Size,
@@ -550,6 +601,7 @@ type expectedPackageMetadata struct {
 	registry       string
 	commitmentHash string
 	circuitKind    domain.IntentCircuitKind
+	dcaGroupLockID string
 	tokenIn        string
 	tokenOut       string
 	size           string
@@ -568,6 +620,7 @@ func validateWitnessPackageForPublicMetadata(pkg domain.EncryptedWitnessPackage,
 		!strings.EqualFold(pkg.AAD.Registry, expected.registry) ||
 		!strings.EqualFold(pkg.AAD.CommitmentHash, expected.commitmentHash) ||
 		pkg.AAD.Kind != expected.circuitKind ||
+		!strings.EqualFold(pkg.AAD.DCAGroupLockID, expected.dcaGroupLockID) ||
 		!strings.EqualFold(pkg.AAD.TokenIn, expected.tokenIn) ||
 		!strings.EqualFold(pkg.AAD.TokenOut, expected.tokenOut) ||
 		pkg.AAD.Size != expected.size ||
@@ -617,6 +670,10 @@ func decodeDcaJSONRejecting(c *gin.Context, dest *registerDcaIntentBody) bool {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "plaintext witness field \"encryptedShares\" is not accepted on v2 intent routes"})
 		return false
 	}
+	if _, ok := raw["dcaGroupId"]; ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "raw DCA group identifier is private; use dcaGroupLockId on v2 intent routes"})
+		return false
+	}
 	if roundsRaw, ok := raw["rounds"]; ok {
 		var rounds []map[string]json.RawMessage
 		if err := json.Unmarshal(roundsRaw, &rounds); err != nil {
@@ -624,7 +681,7 @@ func decodeDcaJSONRejecting(c *gin.Context, dest *registerDcaIntentBody) bool {
 			return false
 		}
 		for i, round := range rounds {
-			for _, field := range []string{"nonce", "nullifier", "scheduledLo", "scheduledHi"} {
+			for _, field := range []string{"nonce", "nullifier", "scheduledLo", "scheduledHi", "dcaGroupId", "dcaGroupLockId"} {
 				if _, ok := round[field]; ok {
 					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("round %d plaintext witness field %q is not accepted on v2 intent routes", i, field)})
 					return false

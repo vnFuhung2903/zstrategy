@@ -89,7 +89,7 @@ func (r *handlerIntentRepo) ResetTicket(_ context.Context, commitmentHash, reaso
 			continue
 		}
 		intent.Status = domain.IntentPending
-		intent.Ticket = ""
+		intent.Ticket = "null"
 		intent.TicketExpiresAt = nil
 		intent.LeasedBy = ""
 		intent.LeaseExpiresAt = nil
@@ -189,9 +189,10 @@ func TestRegisterDcaIntentRejectsRoundPlaintextWitnessFields(t *testing.T) {
 	repo := &handlerIntentRepo{}
 	router := NewRouter(NewHandler(nil, nil, repo, nil, nil, ""), false)
 	body := map[string]any{
-		"chainId":  int64(421614),
-		"tokenIn":  addr("11"),
-		"tokenOut": addr("22"),
+		"chainId":        int64(421614),
+		"dcaGroupLockId": hash("bb"),
+		"tokenIn":        addr("11"),
+		"tokenOut":       addr("22"),
 		"rounds": []map[string]any{{
 			"commitmentHash": hash("03"),
 			"size":           "100",
@@ -199,7 +200,7 @@ func TestRegisterDcaIntentRejectsRoundPlaintextWitnessFields(t *testing.T) {
 			"expiry":         int64(1700000100),
 			"roundIndex":     0,
 			"scheduledLo":    int64(1700000000),
-			"witnessPackage": testWitnessPackage(t, domain.CircuitKindDCA, hash("03"), "100", "0", 1700000100),
+			"witnessPackage": testWitnessPackage(t, domain.CircuitKindDCA, hash("03"), "100", "0", 1700000100, hash("bb")),
 		}},
 	}
 
@@ -215,24 +216,26 @@ func TestRegisterDcaIntentRejectsRoundPlaintextWitnessFields(t *testing.T) {
 func TestRegisterDcaIntentSavesEncryptedPackagesInOneBatch(t *testing.T) {
 	repo := &handlerIntentRepo{}
 	router := NewRouter(NewHandler(nil, nil, repo, nil, nil, ""), false)
+	dcaGroupLockID := hash("bb")
 	body := map[string]any{
-		"chainId":  int64(421614),
-		"tokenIn":  addr("11"),
-		"tokenOut": addr("22"),
+		"chainId":        int64(421614),
+		"dcaGroupLockId": dcaGroupLockID,
+		"tokenIn":        addr("11"),
+		"tokenOut":       addr("22"),
 		"rounds": []map[string]any{{
 			"commitmentHash": hash("04"),
 			"size":           "100",
 			"minOut":         "0",
 			"expiry":         int64(1700000100),
 			"roundIndex":     0,
-			"witnessPackage": testWitnessPackage(t, domain.CircuitKindDCA, hash("04"), "100", "0", 1700000100),
+			"witnessPackage": testWitnessPackage(t, domain.CircuitKindDCA, hash("04"), "100", "0", 1700000100, dcaGroupLockID),
 		}, {
 			"commitmentHash": hash("05"),
 			"size":           "100",
 			"minOut":         "0",
 			"expiry":         int64(1700000200),
 			"roundIndex":     1,
-			"witnessPackage": testWitnessPackage(t, domain.CircuitKindDCA, hash("05"), "100", "0", 1700000200),
+			"witnessPackage": testWitnessPackage(t, domain.CircuitKindDCA, hash("05"), "100", "0", 1700000200, dcaGroupLockID),
 		}},
 	}
 
@@ -247,6 +250,56 @@ func TestRegisterDcaIntentSavesEncryptedPackagesInOneBatch(t *testing.T) {
 		if saved.WitnessPackage == "" {
 			t.Fatalf("empty witness package in saved intent")
 		}
+		if saved.DCAGroupLockID != dcaGroupLockID {
+			t.Fatalf("dca group lock = %s, want %s", saved.DCAGroupLockID, dcaGroupLockID)
+		}
+	}
+}
+
+func TestRegisterDcaIntentRejectsRawDcaGroupID(t *testing.T) {
+	repo := &handlerIntentRepo{}
+	router := NewRouter(NewHandler(nil, nil, repo, nil, nil, ""), false)
+	body := map[string]any{
+		"chainId":    int64(421614),
+		"dcaGroupId": hash("bb"),
+		"tokenIn":    addr("11"),
+		"tokenOut":   addr("22"),
+		"rounds":     []map[string]any{},
+	}
+
+	rec := postJSON(router, "/api/v1/intents/dca", body)
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "raw DCA group identifier") {
+		t.Fatalf("body = %s, want raw group rejection", rec.Body.String())
+	}
+}
+
+func TestRegisterDcaIntentRejectsMismatchedDcaGroupLockPackage(t *testing.T) {
+	repo := &handlerIntentRepo{}
+	router := NewRouter(NewHandler(nil, nil, repo, nil, nil, ""), false)
+	body := map[string]any{
+		"chainId":        int64(421614),
+		"dcaGroupLockId": hash("bb"),
+		"tokenIn":        addr("11"),
+		"tokenOut":       addr("22"),
+		"rounds": []map[string]any{{
+			"commitmentHash": hash("15"),
+			"size":           "100",
+			"minOut":         "0",
+			"expiry":         int64(1700000100),
+			"roundIndex":     0,
+			"witnessPackage": testWitnessPackage(t, domain.CircuitKindDCA, hash("15"), "100", "0", 1700000100, hash("cc")),
+		}},
+	}
+
+	rec := postJSON(router, "/api/v1/intents/dca", body)
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusBadRequest, rec.Body.String())
+	}
+	if len(repo.batchSaved) != 0 {
+		t.Fatalf("batch saved %d intents, want 0", len(repo.batchSaved))
 	}
 }
 
@@ -338,6 +391,20 @@ func TestListExecutionTicketsFiltersMalformedTickets(t *testing.T) {
 				ticket.PackageHash = ""
 			},
 		},
+		{
+			name:   "missing prover receipt",
+			intent: testTicketReadyIntent(t, domain.KindLimit, domain.CircuitKindOrderFill, hash("12"), 421614, time.Minute),
+			mutate: func(ticket *domain.ExecutionTicket) {
+				ticket.ProverReceipt = domain.ProverReceipt{}
+			},
+		},
+		{
+			name:   "prover receipt mismatch",
+			intent: testTicketReadyIntent(t, domain.KindLimit, domain.CircuitKindOrderFill, hash("13"), 421614, time.Minute),
+			mutate: func(ticket *domain.ExecutionTicket) {
+				ticket.ProverReceipt.ProverID = hash("14")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -377,6 +444,8 @@ func TestExecutionTicketEndpointsDoNotExposePrivateFields(t *testing.T) {
 	raw["userSecret"] = hash("15")
 	raw["scheduledLo"] = 1700000000
 	raw["scheduledHi"] = 1700000300
+	raw["dcaGroupId"] = hash("16")
+	raw["dcaGroupLockId"] = hash("17")
 	raw["witnessPackage"] = map[string]any{"ciphertext": "0xprivate"}
 	encoded, err := json.Marshal(raw)
 	if err != nil {
@@ -402,6 +471,8 @@ func TestExecutionTicketEndpointsDoNotExposePrivateFields(t *testing.T) {
 		"usersecret",
 		"scheduledlo",
 		"scheduledhi",
+		"dcagroupid",
+		"dcagrouplockid",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("ticket response leaked %q: %s", forbidden, rec.Body.String())
@@ -436,6 +507,69 @@ func TestClaimExecutionTicketReturnsAndLeasesFirstReadyTicket(t *testing.T) {
 	}
 	if ready.LeasedBy != strings.ToLower(addr("ee")) || ready.LeaseExpiresAt == nil {
 		t.Fatalf("intent was not leased: %#v", ready)
+	}
+}
+
+func TestClaimExecutionTicketCanTargetSelectedCommitment(t *testing.T) {
+	first := testTicketReadyIntent(t, domain.KindMarket, domain.CircuitKindOrderFill, hash("1d"), 421614, time.Minute)
+	second := testTicketReadyIntent(t, domain.KindDCA, domain.CircuitKindDCA, hash("1e"), 421614, time.Minute)
+	repo := &handlerIntentRepo{ticketReady: []*domain.PendingIntent{first, second}}
+	router := newClaimRouter(repo, executableClaim)
+
+	rec := postJSON(router, "/api/v1/executor/tickets/claim?chain_id=421614", map[string]any{
+		"executor":       addr("ee"),
+		"commitmentHash": second.CommitmentHash,
+	})
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Data executionTicketResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.CommitmentHash != second.CommitmentHash {
+		t.Fatalf("claimed hash = %s, want selected %s", body.Data.CommitmentHash, second.CommitmentHash)
+	}
+	if first.LeaseExpiresAt != nil {
+		t.Fatalf("first ticket was leased unexpectedly: %#v", first)
+	}
+	if second.LeasedBy != strings.ToLower(addr("ee")) || second.LeaseExpiresAt == nil {
+		t.Fatalf("selected ticket was not leased: %#v", second)
+	}
+}
+
+func TestClaimExecutionTicketCanTargetCommitmentOutsideQueueLimit(t *testing.T) {
+	first := testTicketReadyIntent(t, domain.KindMarket, domain.CircuitKindOrderFill, hash("20"), 421614, time.Minute)
+	second := testTicketReadyIntent(t, domain.KindMarket, domain.CircuitKindOrderFill, hash("21"), 421614, time.Minute)
+	target := testTicketReadyIntent(t, domain.KindDCA, domain.CircuitKindDCA, hash("22"), 421614, time.Minute)
+	repo := &handlerIntentRepo{ticketReady: []*domain.PendingIntent{first, second, target}}
+	router := newClaimRouter(repo, executableClaim)
+
+	rec := postJSON(router, "/api/v1/executor/tickets/claim?chain_id=421614&limit=1", map[string]any{
+		"executor":       addr("ee"),
+		"commitmentHash": target.CommitmentHash,
+	})
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Data executionTicketResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Data.CommitmentHash != target.CommitmentHash {
+		t.Fatalf("claimed hash = %s, want selected %s", body.Data.CommitmentHash, target.CommitmentHash)
+	}
+	if first.LeaseExpiresAt != nil || second.LeaseExpiresAt != nil {
+		t.Fatalf("non-target tickets were leased unexpectedly: %#v %#v", first, second)
+	}
+	if target.LeasedBy != strings.ToLower(addr("ee")) || target.LeaseExpiresAt == nil {
+		t.Fatalf("target ticket was not leased: %#v", target)
 	}
 }
 
@@ -511,13 +645,16 @@ func TestClaimExecutionTicketResetsPendingTicketWhenSimulationFails(t *testing.T
 	})
 
 	rec := postJSON(router, "/api/v1/executor/tickets/claim?chain_id=421614", map[string]any{"executor": addr("ee")})
-	if rec.Code != stdhttp.StatusNotFound {
-		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusNotFound, rec.Body.String())
+	if rec.Code != stdhttp.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "execution reverted") {
+		t.Fatalf("body = %s, want simulation reason", rec.Body.String())
 	}
 	if ready.Status != domain.IntentPending {
 		t.Fatalf("status = %s, want PENDING", ready.Status)
 	}
-	if ready.Ticket != "" || ready.TicketExpiresAt != nil || ready.LeaseExpiresAt != nil || ready.LeasedBy != "" {
+	if ready.Ticket != "null" || ready.TicketExpiresAt != nil || ready.LeaseExpiresAt != nil || ready.LeasedBy != "" {
 		t.Fatalf("ticket fields were not cleared: %#v", ready)
 	}
 	if !strings.Contains(ready.LastError, "claim simulation failed") {
@@ -537,8 +674,11 @@ func TestClaimExecutionTicketMarksFinalizedTicketDoneWhenSimulationFails(t *test
 	})
 
 	rec := postJSON(router, "/api/v1/executor/tickets/claim?chain_id=421614", map[string]any{"executor": addr("ee")})
-	if rec.Code != stdhttp.StatusNotFound {
-		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusNotFound, rec.Body.String())
+	if rec.Code != stdhttp.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Registry: not pending") {
+		t.Fatalf("body = %s, want simulation reason", rec.Body.String())
 	}
 	if ready.Status != domain.IntentDone {
 		t.Fatalf("status = %s, want DONE", ready.Status)
@@ -585,8 +725,12 @@ func get(router stdhttp.Handler, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
-func testWitnessPackage(t *testing.T, kind domain.IntentCircuitKind, commitmentHash, size, minOut string, expiry int64) domain.EncryptedWitnessPackage {
+func testWitnessPackage(t *testing.T, kind domain.IntentCircuitKind, commitmentHash, size, minOut string, expiry int64, dcaGroupLockID ...string) domain.EncryptedWitnessPackage {
 	t.Helper()
+	lockID := ""
+	if len(dcaGroupLockID) > 0 {
+		lockID = dcaGroupLockID[0]
+	}
 	pkg := domain.EncryptedWitnessPackage{
 		Version:          1,
 		CommitmentHash:   commitmentHash,
@@ -601,6 +745,7 @@ func testWitnessPackage(t *testing.T, kind domain.IntentCircuitKind, commitmentH
 			Registry:       addr("99"),
 			CommitmentHash: commitmentHash,
 			Kind:           kind,
+			DCAGroupLockID: lockID,
 			TokenIn:        addr("11"),
 			TokenOut:       addr("22"),
 			Size:           size,
@@ -631,8 +776,12 @@ func testTicketReadyIntent(t *testing.T, intentKind domain.IntentKind, circuitKi
 		Proof:           "0xabcd",
 		TicketExpiresAt: expiresAt.Unix(),
 		PackageHash:     hash("88"),
-		ProverIDs:       []string{"test"},
-		ProverSignature: "0x99",
+		ProverID:        hash("99"),
+		ProverReceipt: domain.ProverReceipt{
+			ProverID:        hash("99"),
+			TicketExpiresAt: expiresAt.Unix(),
+			Signature:       "0x99",
+		},
 	}
 	if circuitKind == domain.CircuitKindDCA {
 		ticket.FillRef = "1700000000"
