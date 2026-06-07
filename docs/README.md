@@ -1,0 +1,608 @@
+# zstrategy Current System
+
+This document is the authoritative source of truth for the current zstrategy system. Other docs may be historical, archived, or secondary. If another document conflicts with this one, prefer this document.
+
+## Status Convention
+
+- Current: implemented and demo-relevant now.
+- Future work: planned but not implemented.
+- Legacy: old implementation or historical design.
+
+Use `intent` for current product, code, API, and thesis language. The older term `strategy` appears only in legacy or historical context.
+
+## Project Vision
+
+zstrategy is a privacy-preserving DeFi automation prototype for private trading intents. Users create commitments for actions such as limit orders, market orders, and DCA rounds without publishing the private witness data that determines when those intents should execute.
+
+The current demo goal is to show that:
+
+- users can create encrypted private intents in the browser;
+- the backend stores public metadata plus encrypted witness packages, not plaintext witnesses;
+- a simulated Nitro-style prover boundary evaluates and proves intents;
+- public executors can submit execution tickets without seeing private witness data;
+- the smart contract remains the settlement trust root.
+
+This is a thesis/demo system, not a production system. The local simulated TEE does not provide hardware isolation.
+
+## Problem Statement
+
+On-chain automation often leaks actionable information before execution:
+
+- Limit orders reveal target prices that can be attacked or copied.
+- DCA schedules reveal repeated timing patterns.
+- Conditional automation services often require an off-chain operator to know the user's trigger condition.
+- Public mempools expose execution transactions to MEV risks.
+
+zstrategy reduces this leakage by committing to private witness data and proving execution validity later.
+
+## Goals And Scope
+
+Current scope:
+
+- Private limit orders.
+- Private market orders using the same order-fill circuit with sentinel prices.
+- Private DCA rounds with non-overlap checks and off-chain same-group proof locking.
+- Encrypted witness packages.
+- Simulated Nitro-style TEE/prover boundary.
+- Public execution ticket queue, claim endpoint, frontend executor route, and standalone CLI executor.
+- On-chain settlement through `CommitmentRegistry`, `CollateralVault`, verifier contracts, and a DEX adapter.
+- Output-token executor/prover fees from gross swap output.
+- Backend chain indexing, stats, and Prometheus metrics.
+
+Out of current scope:
+
+- Real AWS Nitro Enclave deployment.
+- Production hardware isolation.
+- Cryptographic executor-specific ticket binding.
+- Multi-backend shared DCA locks.
+- Strict on-chain DCA round ordering.
+- Grid trading, copy trading, and multi-chain production support.
+- Fully production-grade UX, recovery, rate limiting, and abuse controls.
+
+## Current Architecture
+
+```text
+Browser
+  - builds private intent witness locally
+  - derives per-intent user_secret from wallet signature
+  - computes commitment and nullifier
+  - verifies simulated enclave attestation
+  - encrypts witness package to the enclave key
+  - registers commitment on-chain
+  - posts public metadata plus encrypted package to backend
+
+Backend
+  - accepts v2 intent registration routes
+  - stores pending_intents with public metadata and encrypted witness package
+  - indexes registry events
+  - schedules enclave evaluation
+  - stores execution tickets when proofs are ready
+  - exposes public ticket list and claim endpoints
+  - runs claim-time eth_call simulation before returning a claimed ticket
+
+Simulated TEE prover
+  - owns the witness decryption key
+  - returns simulated attestation reports
+  - imports encrypted witness packages
+  - decrypts only inside the prover boundary
+  - checks private fill conditions
+  - generates Noir/Barretenberg proofs
+  - signs prover receipts for execution tickets
+
+Public executor
+  - fetches or claims public tickets
+  - receives no witness plaintext and no witness package
+  - submits executeCommitment(commitmentHash, nullifier, proof, fillRef, receipt)
+
+Smart contracts
+  - store commitments
+  - verify prover receipts and ZK proofs
+  - read Chainlink price feeds for order fills
+  - freshness-check DCA fillRef
+  - swap collateral through the DEX adapter
+  - distribute output-token fees and user proceeds
+```
+
+## Main Components
+
+### Frontend
+
+Location: `frontend/`
+
+Current responsibilities:
+
+- Next.js app for order creation, DCA creation, vault operations, activity, and public executor UI.
+- Wallet integration through wagmi and viem.
+- Client-side commitment generation.
+- Local encrypted witness package creation.
+- Simulated enclave attestation verification through the backend attestation route.
+- Local IndexedDB metadata for user-owned intents.
+- Backend registration calls after on-chain commitment confirmation.
+- User-visible retry for backend sync failures after successful wallet transactions.
+
+Important frontend routes:
+
+- `/orders` - limit and market order creation.
+- `/dca` - DCA batch creation.
+- `/executor` - public executor ticket claim and submission UI.
+- `/vault` - collateral/vault UI.
+- `/activity` - indexed execution/activity view.
+
+### Backend
+
+Location: `backend/`
+
+Current responsibilities:
+
+- HTTP API using Gin.
+- PostgreSQL persistence through GORM.
+- Chain indexing and execution stats.
+- v2 intent relay and scheduler.
+- Enclave package import/evaluation orchestration.
+- Ticket publication, leasing, claim simulation, stale-ticket reset, and terminal-state cleanup.
+- Prometheus metrics.
+
+Current HTTP routes:
+
+| Method | Path | Status | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/health` | Current | Liveness. |
+| `GET` | `/metrics` | Current | Prometheus metrics when enabled. |
+| `GET` | `/api/v1/stats` | Current | Aggregate indexed stats. |
+| `GET` | `/api/v1/executions` | Current | Paginated execution records. |
+| `POST` | `/api/v1/enclave/attest` | Current | Proxy simulated enclave attestation metadata/report to the frontend. |
+| `POST` | `/api/v1/intents/order` | Current | Register LIMIT or MARKET encrypted witness package. |
+| `POST` | `/api/v1/intents/dca` | Current | Register encrypted DCA rounds with an opaque `dcaGroupLockId`. |
+| `GET` | `/api/v1/executor/tickets` | Current | List backend-ready, non-expired public execution tickets. |
+| `POST` | `/api/v1/executor/tickets/claim` | Current | Claim a ticket, lease it briefly, and run claim-time `eth_call` simulation. |
+
+The claim endpoint accepts:
+
+```json
+{
+  "executor": "0x...",
+  "commitmentHash": "0x..."
+}
+```
+
+`commitmentHash` is optional. If it is supplied, the backend targets that specific ready ticket regardless of generic queue position. If omitted, the endpoint keeps the next-available queue behavior.
+
+### Enclave
+
+Location: `enclave/`
+
+Current status: simulated Nitro-style prover boundary.
+
+The enclave package exposes:
+
+- simulated attestation;
+- X25519 plus AES-256-GCM witness package encryption/decryption flow;
+- package import;
+- private evaluation;
+- Noir/Barretenberg proof generation;
+- prover receipt signing.
+
+The local process is not a hardware security boundary. It is an interface-compatible demo target for a future AWS Nitro Enclave adapter.
+
+### Executor
+
+Locations:
+
+- Frontend executor route: `frontend/src/app/(dashboard)/executor/page.tsx`
+- CLI executor package: `executor/`
+
+Current behavior:
+
+- Public executors claim tickets from the backend.
+- The frontend executor can claim the selected commitment hash.
+- The CLI executor claims one backend-selected ticket for the connected chain.
+- Executors validate ticket shape before submitting.
+- Executors do not receive witness packages or plaintext witness fields.
+
+### Smart Contracts
+
+Location: `contracts/`
+
+Current contract responsibilities:
+
+- `CommitmentRegistry.sol`
+  - registers commitments;
+  - dispatches proof verification by commitment kind;
+  - verifies EIP-712 prover receipts;
+  - checks pending status, expiry, and nullifier reuse;
+  - reads Chainlink feeds for ORDER_FILL;
+  - freshness-checks DCA timestamps;
+  - executes settlement and fee distribution.
+- `CollateralVault.sol`
+  - stores user ERC-20 collateral;
+  - locks collateral per commitment;
+  - releases collateral for execution.
+- `OrderFillVerifier.sol`
+  - generated UltraHonk verifier for limit and market orders.
+- `DCAVerifier.sol`
+  - generated UltraHonk verifier for DCA rounds.
+- DEX adapter contracts
+  - execute swaps for settlement.
+- `GasVault.sol`
+  - Legacy keeper-era gas tank. It remains in the repository for historical deployments and withdrawals, but current v2 public execution does not debit it.
+
+## Intent Lifecycle
+
+1. The user builds an intent in the browser.
+2. The browser derives a per-intent `user_secret` from a wallet signature over an `intentId`.
+3. The browser computes the commitment hash and nullifier.
+4. The browser verifies simulated enclave attestation.
+5. The browser encrypts the witness package to the attested enclave public key.
+6. The user registers the commitment on-chain.
+7. After the wallet transaction confirms, the frontend posts public metadata plus encrypted package to the backend.
+8. The backend stores the pending intent and imports the encrypted package into the simulated enclave.
+9. The backend scheduler supplies public context to the enclave.
+10. The enclave decrypts privately, checks the condition, and returns `NOT_READY` or an execution ticket.
+11. When a ticket is ready, the backend stores it as `TICKET_READY`.
+12. A public executor lists or claims a ticket.
+13. The backend claim endpoint leases the ticket and simulates `executeCommitment` with `eth_call`.
+14. The executor submits the transaction.
+15. The registry verifies receipt and proof, executes settlement, spends the nullifier, and emits events.
+16. The backend indexer observes terminal events and stops or prunes scheduling state.
+
+## Supported Flows
+
+### Limit Order
+
+Status: Current.
+
+A limit order hides the limit price, direction, nonce, nullifier, and `user_secret` inside the encrypted witness package. Public registration still includes token addresses, size, `minOut`, expiry, owner, and commitment hash.
+
+Execution condition:
+
+- BUY: oracle pair price must be less than or equal to the private price.
+- SELL: oracle pair price must be greater than or equal to the private price.
+
+ORDER_FILL tickets use `fillRef = "0"` because the registry reads Chainlink itself at execution time.
+
+### Market Order
+
+Status: Current.
+
+Market orders reuse the ORDER_FILL circuit and on-chain commitment kind. The frontend stores a user-facing `kind = "MARKET"` but the contract still sees `ORDER_FILL`.
+
+Sentinel private prices:
+
+- BUY market order: `price = u64.max`.
+- SELL market order: `price = 0`.
+
+These sentinels make the order-fill condition trivially satisfiable while preserving the same proof and settlement path. Market orders use a short expiry so unfilled demo orders do not linger indefinitely.
+
+### DCA
+
+Status: Current.
+
+DCA creates multiple independent DCA commitments, one per round. Each round has its own nonce, nullifier, scheduled window, expiry, and encrypted witness package.
+
+Current DCA protections:
+
+- frontend rejects overlapping windows for a group before signing and registration;
+- enclave rejects overlapping same-group windows before proof generation;
+- backend stores only an opaque `dcaGroupLockId`, not raw `dcaGroupId`;
+- scheduler prevents concurrent proof jobs for the same `dcaGroupLockId` inside one backend process;
+- public executor ticket responses do not expose raw group IDs, lock IDs, private windows, nonces, nullifiers, or witness packages.
+
+The backend DCA lock is off-chain and in-process. Strict on-chain round ordering is future work.
+
+## ZK Proof Model
+
+Current proof system:
+
+- Circuits: Noir.
+- Proving backend: Barretenberg / UltraHonk.
+- Solidity verifiers generated by Barretenberg.
+
+Current circuits:
+
+- `circuits/order_fill`
+- `circuits/dca`
+
+Public input layout shared by current tickets:
+
+```text
+[0] commitment_hash
+[1] fill_ref
+[2] nullifier
+[3] token_in
+[4] token_out
+[5] size
+[6] min_out
+[7] expiry
+```
+
+For ORDER_FILL, the submitted ticket uses `fillRef = 0`, and the registry replaces it with the live Chainlink-derived pair price before proof verification.
+
+For DCA, `fillRef` is the proven execution timestamp. The registry requires it to be not in the future and recent enough relative to the block timestamp.
+
+The nullifier is single-use and prevents replay.
+
+Circuit artifact notes:
+
+- `frontend` copies `circuits/order_fill/target/order_fill.json` into public assets before dev/build.
+- Regenerating Solidity verifiers from Barretenberg output may require manually renaming the final generated verifier contract to match the file (`OrderFillVerifier` or `DCAVerifier`) and linking `ZKTranscriptLib`.
+- Circuit compilation and Barretenberg verifier generation are easiest from a Linux or WSL shell.
+
+## Simulated Nitro-Style TEE Model
+
+Status: Current as a local simulation.
+
+The simulated enclave imitates the Nitro-style boundary:
+
+- the enclave owns a recipient key;
+- attestation binds nonce, image digest, PCR-like values, and enclave public key;
+- the browser verifies the report before encrypting the witness package;
+- only the enclave package decrypts witness ciphertext;
+- backend and executors treat witness packages as opaque bytes.
+
+This does not claim real hardware isolation. Real AWS Nitro Enclave integration is future work.
+
+## Public Executor Ticket Flow
+
+Status: Current.
+
+Ticket shape includes public metadata and proof material:
+
+- `commitmentHash`
+- `chainId`
+- `registry`
+- `kind`
+- `nullifier`
+- `fillRef`
+- `proof`
+- `ticketExpiresAt`
+- `packageHash`
+- `proverId`
+- `proverReceipt`
+
+Ticket privacy rule:
+
+Public ticket APIs must not expose:
+
+- plaintext witness fields;
+- witness packages;
+- limit price;
+- direction;
+- nonce;
+- `user_secret`;
+- raw `dcaGroupId`;
+- `dcaGroupLockId`;
+- DCA scheduled windows.
+
+Claim behavior:
+
+- `GET /api/v1/executor/tickets` is a lightweight backend-ready list.
+- `POST /api/v1/executor/tickets/claim` requires an executor address.
+- The backend records a short lease bounded by ticket expiry.
+- The backend runs `eth_call` simulation of the registry execution before returning a claimed ticket.
+- If claim simulation fails while the commitment remains pending, the backend clears the stale ticket and resets the intent for re-evaluation.
+- If the commitment is already finalized, the backend marks the row done.
+
+Leases coordinate honest executors. They are not cryptographic executor binding.
+
+## Smart Contract Settlement Flow
+
+Current execution calldata:
+
+```solidity
+executeCommitment(
+    bytes32 commitmentHash,
+    bytes32 nullifier,
+    bytes proof,
+    uint64 fillRef,
+    ProverReceipt receipt
+)
+```
+
+Settlement steps:
+
+1. Require commitment is pending, not expired, and nullifier unspent.
+2. Verify prover receipt:
+   - known prover;
+   - active prover;
+   - unexpired ticket;
+   - EIP-712 signature over commitment hash, nullifier, proof hash, submitted fillRef, ticket expiry, commitment kind, and prover ID.
+3. Build verifier public inputs.
+4. For ORDER_FILL, require submitted `fillRef == 0` and read the live Chainlink pair price.
+5. For DCA, validate submitted `fillRef` freshness.
+6. Verify the UltraHonk proof.
+7. Mark nullifier spent and commitment executed before external calls.
+8. Release collateral to the DEX adapter and swap to the registry.
+9. Require gross output is at least `minOut`.
+10. Pay executor and prover fees from gross `tokenOut`.
+11. Transfer remaining `tokenOut` to the commitment owner.
+
+Fee model:
+
+- Public executors pay gas upfront.
+- Executor and prover are paid from gross output tokens.
+- Fee bps are registry settings with caps.
+- `GasVault` is not used by current v2 public execution.
+
+## Privacy And Security Model
+
+Current privacy claims:
+
+- Backend does not store plaintext v2 witness fields.
+- Public executors do not receive witness packages or private witness fields.
+- Chain observers do not see private limit price, DCA windows, nonce, or `user_secret`.
+- The contract verifies settlement validity independently of the backend, executor, and enclave host.
+
+Public or revealed information:
+
+- commitment hash;
+- owner address;
+- token addresses;
+- size;
+- `minOut`;
+- expiry;
+- commitment kind;
+- execution fact and settlement outputs;
+- nullifier at execution;
+- DCA grouping may be partially visible to the backend through opaque lock IDs.
+
+Security boundaries:
+
+- Smart contracts are the settlement trust root.
+- Simulated enclave is trusted for demo privacy but not hardware-isolated.
+- Backend is trusted for availability and scheduling, not for settlement correctness.
+- Executors are untrusted transaction submitters.
+- Oracle data is read by the registry at fill time for ORDER_FILL.
+
+Known security limitations:
+
+- No real TEE hardware isolation yet.
+- No cryptographic executor-specific ticket binding.
+- Claim simulation can race the next block or another executor transaction.
+- Backend ticket list is eventually consistent with chain indexing.
+- ORDER_FILL tickets can become stale if oracle prices move between proof generation, claim simulation, and mined execution.
+- DCA same-group locking is in-process only.
+- Registration endpoints need production-grade anti-spam and ownership hardening before public production use.
+- Browser-local metadata recovery after a post-confirmation backend sync failure is not fully productized.
+
+## Technical Stack
+
+| Area | Current stack |
+| --- | --- |
+| Frontend | Next.js, React, TypeScript, wagmi, viem, Tailwind CSS |
+| Backend | Go, Gin, GORM, PostgreSQL, Redis |
+| Enclave | TypeScript, Node.js, simulated Nitro-style API |
+| Executor CLI | TypeScript, Node.js, ethers |
+| Contracts | Solidity, Hardhat, OpenZeppelin |
+| Circuits | Noir, Barretenberg, UltraHonk |
+| Oracle | Chainlink feeds configured in `CommitmentRegistry.priceFeeds` |
+| DEX | Adapter interface with Uniswap/mock adapters |
+| Metrics | Prometheus and Grafana |
+| Demo chain | Arbitrum Sepolia |
+
+## Common Commands
+
+Backend:
+
+```powershell
+cd backend
+go build ./...
+go test ./...
+go run ./cmd/server
+```
+
+If the Go cache is unavailable on Windows:
+
+```powershell
+cd backend
+$env:GOCACHE = Join-Path $env:TEMP 'zstrategy-go-cache'
+go test ./...
+```
+
+Frontend:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+npm run lint
+npm run test:dca
+npm run build
+```
+
+Frontend dev URL:
+
+```text
+http://localhost:5173
+```
+
+`next/font` fetches Google font assets during build. Restricted network environments may need network access or local fonts.
+
+Enclave:
+
+```powershell
+cd enclave
+npm install
+npm run generate-demo-env
+npm run dev
+npm test
+npm run build
+```
+
+Executor CLI:
+
+```powershell
+cd executor
+npm install
+$env:BACKEND_URL = "http://localhost:8080"
+$env:RPC_URL = "https://..."
+$env:EXECUTOR_PRIVATE_KEY = "0x..."
+npm run execute
+```
+
+Contracts:
+
+```powershell
+cd contracts
+npx hardhat compile
+npx hardhat test
+```
+
+Docker dependencies from repo root:
+
+```powershell
+docker compose up postgres redis
+```
+
+Observability:
+
+```powershell
+docker compose up prometheus grafana
+```
+
+Prometheus: `http://localhost:9090`
+
+Grafana: `http://localhost:3000`
+
+## Setup Notes
+
+Component-specific setup remains in the local READMEs:
+
+- `backend/README.md`
+- `frontend/README.md`
+- `enclave/README.md`
+- `executor/README.md`
+
+Those files are secondary setup references. For current architecture and thesis wording, prefer this document.
+
+## Current Limitations
+
+- The simulated enclave is not real hardware isolation.
+- Real AWS Nitro Enclave deployment is not implemented.
+- Public executor tickets are not cryptographically bound to one executor.
+- Backend leases are short coordination hints, not settlement authority.
+- `GET /executor/tickets` is backend-ready only; claim performs fresher simulation.
+- Ticket execution can still fail after claim due to oracle movement, chain state changes, gas issues, or competing executors.
+- DCA group locking is process-local and does not protect multi-replica deployments.
+- DCA strict on-chain ordering is not implemented.
+- Backend sync retry exists for the active page session, but full recovery after reload requires more product work.
+- The CLI executor claims the next backend-selected ticket; the frontend executor supports claiming a selected commitment hash.
+- Production anti-spam, rate limits, monitoring, key management, and deployment hardening are incomplete.
+
+## Future Work
+
+Future work only; do not describe these as current behavior:
+
+- Real AWS Nitro Enclave adapter and attestation verification.
+- Executor-specific ticket binding.
+- Shared scheduler locks for multi-backend deployments.
+- DCA `prevNullifier` circuit and registry enforcement for strict ordering.
+- Grid trading.
+- Copy trading.
+- Multi-chain production deployment.
+- Production recovery flows for encrypted witness backup and backend sync retries.
+- Stronger API abuse controls, rate limits, and ownership proofs.
+- Formal audits and production security hardening.
+
+## Legacy Material
+
+The old keeper/Shamir design, GasVault reimbursement flow, implementation handoffs, reviews, and long design histories are archived under `docs/archive/`. They are historical background only and should not be read by default for current coding or thesis writing.
