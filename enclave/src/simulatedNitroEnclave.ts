@@ -1,4 +1,5 @@
 import { PrivateKey } from "eciesjs";
+import { Wallet, keccak256, toUtf8Bytes } from "ethers";
 import type {
   AttestationReport,
   AttestationRequest,
@@ -11,21 +12,33 @@ import type {
   OrderFillWitness,
   ProofGenerator,
 } from "./types";
-import { createDevRootKeypair, signAttestationReport, signStablePayload, type DevRootKeypair } from "./attestation";
+import { createDevRootKeypair, signAttestationReport, type DevRootKeypair } from "./attestation";
 import { decryptWitnessPackage } from "./internal/decryptWitnessPackage";
 import { assertValidPackageHash } from "./witnessPackage";
 import { sha256Hex, toHex } from "./encoding";
 
 const DEFAULT_IMAGE_DIGEST = "0x6b8b8f3d5d5c4f3a7f9e22a9df7f6156ad43db2f61aa78f40b85d5ea7f3c0b61" as const;
+const PROVER_RECEIPT_TYPES = {
+  ProverReceipt: [
+    { name: "commitmentHash", type: "bytes32" },
+    { name: "nullifier", type: "bytes32" },
+    { name: "proofHash", type: "bytes32" },
+    { name: "fillRef", type: "uint64" },
+    { name: "ticketExpiresAt", type: "uint64" },
+    { name: "kind", type: "uint8" },
+    { name: "proverId", type: "bytes32" },
+  ],
+};
 
 export interface SimulatedNitroEnclaveOptions {
   devRoot?: DevRootKeypair;
   enclavePrivateKeyHex?: Hex;
-  imageDigest?: Hex;
+  imageDigest: Hex;
   pcrs?: Record<string, string>;
   proofGenerator: ProofGenerator;
   ticketTtlSeconds?: number;
-  proverId?: string;
+  proverId: Hex;
+  proverSigningPrivateKey: Hex;
 }
 
 export class SimulatedNitroIntentProverEnclave implements IntentProverEnclave {
@@ -37,7 +50,8 @@ export class SimulatedNitroIntentProverEnclave implements IntentProverEnclave {
   private readonly enclavePrivateKey: PrivateKey;
   private readonly proofGenerator: ProofGenerator;
   private readonly ticketTtlSeconds: number;
-  private readonly proverId: string;
+  private readonly proverId: Hex;
+  private readonly proverWallet: Wallet;
   private readonly packages = new Map<Hex, EncryptedWitnessPackage>();
   private readonly dcaWindows = new Map<Hex, Array<{ commitmentHash: Hex; lo: number; hi: number }>>();
   private readonly activeDcaGroups = new Set<Hex>();
@@ -46,7 +60,7 @@ export class SimulatedNitroIntentProverEnclave implements IntentProverEnclave {
     const devRoot = options.devRoot ?? createDevRootKeypair();
     this.rootPrivateKeyPem = devRoot.privateKeyPem;
     this.rootPublicKeyPem = devRoot.publicKeyPem;
-    this.imageDigest = options.imageDigest ?? DEFAULT_IMAGE_DIGEST;
+    this.imageDigest = options.imageDigest;
     this.pcrs = options.pcrs ?? {
       PCR0: sha256Hex("zstrategy-enclave:image"),
       PCR1: sha256Hex("zstrategy-enclave:kernel"),
@@ -57,7 +71,8 @@ export class SimulatedNitroIntentProverEnclave implements IntentProverEnclave {
       : new PrivateKey(undefined, "x25519");
     this.proofGenerator = options.proofGenerator;
     this.ticketTtlSeconds = options.ticketTtlSeconds ?? 60;
-    this.proverId = options.proverId ?? "simulated-nitro-local";
+    this.proverId = options.proverId;
+    this.proverWallet = new Wallet(options.proverSigningPrivateKey);
   }
 
   async attest(req: AttestationRequest): Promise<AttestationReport> {
@@ -178,14 +193,20 @@ export class SimulatedNitroIntentProverEnclave implements IntentProverEnclave {
     return this.ticket(pkg, witness.nullifier, executionTimestamp.toString(), proof);
   }
 
-  private ticket(
+  private async ticket(
     pkg: EncryptedWitnessPackage,
     nullifier: Hex,
     fillRef: string,
     proof: Hex,
-  ): ExecutionTicket {
+  ): Promise<ExecutionTicket> {
     const now = Math.floor(Date.now() / 1000);
-    const unsigned = {
+    const ticketExpiresAt = now + this.ticketTtlSeconds;
+    const proverReceipt = {
+      proverId: this.proverId,
+      ticketExpiresAt,
+      signature: await this.signProverReceipt(pkg, nullifier, fillRef, proof, ticketExpiresAt),
+    };
+    return {
       version: 1 as const,
       chainId: pkg.aad.chainId,
       registry: pkg.aad.registry,
@@ -194,14 +215,38 @@ export class SimulatedNitroIntentProverEnclave implements IntentProverEnclave {
       nullifier,
       fillRef,
       proof,
-      ticketExpiresAt: now + this.ticketTtlSeconds,
+      ticketExpiresAt,
       packageHash: pkg.packageHash,
-      proverIds: [this.proverId],
+      proverId: this.proverId,
+      proverReceipt,
     };
-    return {
-      ...unsigned,
-      proverSignature: signStablePayload(unsigned, this.rootPrivateKeyPem),
-    };
+  }
+
+  private signProverReceipt(
+    pkg: EncryptedWitnessPackage,
+    nullifier: Hex,
+    fillRef: string,
+    proof: Hex,
+    ticketExpiresAt: number,
+  ): Promise<Hex> {
+    return this.proverWallet.signTypedData(
+      {
+        name: "zstrategy.ProverReceipt",
+        version: "1",
+        chainId: pkg.aad.chainId,
+        verifyingContract: pkg.aad.registry,
+      },
+      PROVER_RECEIPT_TYPES,
+      {
+        commitmentHash: pkg.commitmentHash,
+        nullifier,
+        proofHash: keccak256(proof),
+        fillRef: BigInt(fillRef),
+        ticketExpiresAt: BigInt(ticketExpiresAt),
+        kind: pkg.kind === "DCA" ? 1 : 0,
+        proverId: this.proverId,
+      },
+    ) as Promise<Hex>;
   }
 
   private enclavePublicKey(): Hex {

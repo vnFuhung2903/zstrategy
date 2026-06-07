@@ -3,6 +3,8 @@ import { NoirProofGenerator } from "./noirProofGenerator";
 import { SimulatedNitroIntentProverEnclave } from "./simulatedNitroEnclave";
 import type { AttestationRequest, EncryptedWitnessPackage, FillContext, Hex } from "./types";
 import { createDevRootKeypair, type DevRootKeypair } from "./attestation";
+import * as dotenv from "dotenv";
+dotenv.config();
 
 const DEFAULT_PORT = 3002;
 
@@ -17,7 +19,9 @@ const enclave = new SimulatedNitroIntentProverEnclave({
   enclavePrivateKeyHex: optionalHexEnv("ENCLAVE_PRIVATE_KEY_HEX"),
   proofGenerator,
   ticketTtlSeconds: Number.parseInt(env("TICKET_TTL_SECONDS", "60"), 10),
-  proverId: env("PROVER_ID", "simulated-nitro-local"),
+  proverId: requiredHexEnv("PROVER_ID"),
+  proverSigningPrivateKey: requiredHexEnv("PROVER_SIGNING_PRIVATE_KEY"),
+  imageDigest: requiredHexEnv("ENCLAVE_IMAGE_DIGEST"),
 });
 
 const port = Number.parseInt(env("ENCLAVE_PORT", String(DEFAULT_PORT)), 10);
@@ -117,6 +121,14 @@ function optionalHexEnv(name: string): Hex | undefined {
   const value = process.env[name];
   if (!value) return undefined;
   return value.startsWith("0x") ? value as Hex : `0x${value}` as Hex;
+}
+
+function requiredHexEnv(name: string): Hex {
+  const value = optionalHexEnv(name);
+  if (!value) {
+    throw new Error(`${name} is required; run npm run generate-demo-env for local demo values`);
+  }
+  return value;
 }
 
 function loadDevRoot(): DevRootKeypair | undefined {

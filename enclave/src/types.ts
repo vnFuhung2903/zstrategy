@@ -10,6 +10,7 @@ export interface PublicIntentMetadata {
   registry: Hex;
   commitmentHash: Hex;
   kind: IntentCircuitKind;
+  dcaGroupLockId?: Hex;
   tokenIn: Hex;
   tokenOut: Hex;
   size: string;
@@ -91,8 +92,14 @@ export interface ExecutionTicket {
   ticketExpiresAt: number;
   executor?: Hex;
   packageHash: Hex;
-  proverIds: string[];
-  proverSignature: Hex;
+  proverId: Hex;
+  proverReceipt: ProverReceipt;
+}
+
+export interface ProverReceipt {
+  proverId: Hex;
+  ticketExpiresAt: number;
+  signature: Hex;
 }
 
 export interface IntentProverEnclave {
