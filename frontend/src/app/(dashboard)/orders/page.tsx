@@ -72,7 +72,7 @@ export default function OrdersPage() {
   const publicClient = usePublicClient();
   const [pair,       setPair]       = useState<TradingPair>(DEFAULT_PAIR);
   const [kind,       setKind]       = useState<IntentKind>("LIMIT");
-  const [side,       setSide]       = useState<Side>("SELL");
+  const [side,       setSide]       = useState<Side>("BUY");
   const [tif,        setTif]        = useState<keyof typeof TIME_IN_FORCE>("7D");
   const [amount,     setAmount]     = useState("");
   const [targetPrice,setTargetPrice]= useState("");
