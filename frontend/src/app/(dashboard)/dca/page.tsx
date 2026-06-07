@@ -58,11 +58,14 @@ export default function DcaPage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [pendingPost, setPendingPost] = useState<PostDcaIntentBody | null>(null);
   const [postSynced,  setPostSynced]  = useState(false);
+  const [backendSyncRetry, setBackendSyncRetry] = useState(0);
+  const [backendSyncError, setBackendSyncError] = useState<string | null>(null);
 
   const tokenIn  = side === "BUY" ? pair.quoteToken : pair.baseToken;
   const tokenOut = side === "BUY" ? pair.baseToken  : pair.quoteToken;
 
   const sharedNonceRef = useRef<`0x${string}` | null>(null);
+  const backendSyncHashRef = useRef<string | null>(null);
   useEffect(() => { sharedNonceRef.current = randomBytes32(); }, []);
 
   function getSharedNonce(): `0x${string}` {
@@ -111,6 +114,7 @@ export default function DcaPage() {
   async function handleSubmit() {
     if (!isConnected || !address || sizeBig === BigInt(0) || !roundCountValid || scheduleError) return;
     setSubmitError(null);
+    setBackendSyncError(null);
 
     try {
       const sharedNonce = getSharedNonce();
@@ -195,6 +199,8 @@ export default function DcaPage() {
       await saveDcaRounds(records);
 
       setPostSynced(false);
+      setBackendSyncRetry(0);
+      backendSyncHashRef.current = null;
       setPendingPost({
         chainId,
         dcaGroupLockId,
@@ -224,14 +230,37 @@ export default function DcaPage() {
     }
   }
 
+  function retryBackendSync() {
+    if (!pendingPost || postSynced) return;
+    setSubmitError(null);
+    setBackendSyncError(null);
+    setBackendSyncRetry(n => n + 1);
+  }
+
   useEffect(() => {
     if (!isSuccess || !pendingPost || postSynced) return;
+    if (backendSyncHashRef.current === pendingPost.dcaGroupLockId) return;
+    backendSyncHashRef.current = pendingPost.dcaGroupLockId;
+
     let cancelled = false;
     backendApi.postDcaIntent(pendingPost)
-      .then(() => { if (!cancelled) setPostSynced(true); })
-      .catch(err => { if (!cancelled) console.warn("[dca] backend post failed (retry later):", err); });
+      .then(() => {
+        if (!cancelled) {
+          setPostSynced(true);
+          setBackendSyncError(null);
+        }
+      })
+      .catch(err => {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : String(err);
+          backendSyncHashRef.current = null;
+          setBackendSyncError(msg);
+          setSubmitError(msg);
+          console.warn("[dca] backend post failed (retry later):", err);
+        }
+      });
     return () => { cancelled = true; };
-  }, [isSuccess, pendingPost, postSynced]);
+  }, [isSuccess, pendingPost, postSynced, backendSyncRetry]);
 
   const busy = isPending || isConfirming || isSigning;
   const errorMessage = submitError ?? scheduleError ?? (error ? (error as Error).message : null);
@@ -374,7 +403,16 @@ export default function DcaPage() {
               {errorMessage && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-error">
                   <AlertCircle size={13} />
-                  {errorMessage.slice(0, 160)}
+                  <span>{errorMessage.slice(0, 160)}</span>
+                  {backendSyncError && pendingPost && !postSynced && (
+                    <button
+                      type="button"
+                      onClick={retryBackendSync}
+                      className="ml-auto shrink-0 text-primary-container hover:underline"
+                    >
+                      Retry sync
+                    </button>
+                  )}
                 </div>
               )}
 

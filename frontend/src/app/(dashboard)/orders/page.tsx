@@ -95,6 +95,8 @@ export default function OrdersPage() {
   // is created (the indexer would otherwise race the POST).
   const [pendingPost, setPendingPost] = useState<PostOrderIntentBody | null>(null);
   const [postSynced,  setPostSynced]  = useState(false);
+  const [backendSyncRetry, setBackendSyncRetry] = useState(0);
+  const [backendSyncError, setBackendSyncError] = useState<string | null>(null);
   const [marketIntentHash, setMarketIntentHash] = useState<`0x${string}` | null>(null);
   const [marketIntentPhase, setMarketIntentPhase] = useState<"registering" | "syncing" | "queued" | "error" | null>(null);
 
@@ -276,6 +278,7 @@ export default function OrdersPage() {
   async function handleSubmit() {
     if (!isConnected || !address || amountBig === BigInt(0) || priceBig === BigInt(0) || !expiry) return;
     setSubmitError(null);
+    setBackendSyncError(null);
 
     try {
       const nonce = getDraftNonce();
@@ -354,6 +357,7 @@ export default function OrdersPage() {
       // sentinel price that makes the fill check pass.
       const isMarketOrder = kind === "MARKET";
       setPostSynced(false);
+      setBackendSyncRetry(0);
       setMarketIntentHash(isMarketOrder ? commitmentHash : null);
       setMarketIntentPhase(isMarketOrder ? "registering" : null);
       marketIntentToastRef.current = null;
@@ -387,6 +391,14 @@ export default function OrdersPage() {
     }
   }
 
+  function retryBackendSync() {
+    if (!pendingPost || postSynced) return;
+    setSubmitError(null);
+    setBackendSyncError(null);
+    if (pendingPost.kind === "MARKET") setMarketIntentPhase("syncing");
+    setBackendSyncRetry(n => n + 1);
+  }
+
   // Once the on-chain tx confirms, hand the encrypted witness package to the
   // backend scheduler. Failures here leave the on-chain commitment intact (the
   // user can retry sync later); funds are never stuck because the chain is the
@@ -407,6 +419,7 @@ export default function OrdersPage() {
       .then(() => {
         if (!cancelled) {
           setPostSynced(true);
+          setBackendSyncError(null);
           if (pendingPost.kind === "MARKET") {
             setMarketIntentPhase("queued");
             if (marketIntentToastRef.current !== pendingPost.commitmentHash) {
@@ -422,13 +435,15 @@ export default function OrdersPage() {
       .catch(err => {
         if (!cancelled) {
           const msg = err instanceof Error ? err.message : String(err);
+          backendSyncHashRef.current = null;
+          setBackendSyncError(msg);
           setSubmitError(msg);
           if (pendingPost.kind === "MARKET") setMarketIntentPhase("error");
           console.warn("[intent] backend post failed (will need retry):", err);
         }
       });
     return () => { cancelled = true; };
-  }, [isSuccess, pendingPost, postSynced]);
+  }, [isSuccess, pendingPost, postSynced, backendSyncRetry]);
 
   const effectiveMarketIntentPhase =
     marketIntentPhase === "registering" && isSuccess ? "syncing" : marketIntentPhase;
@@ -652,7 +667,16 @@ export default function OrdersPage() {
               {errorMessage && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-error">
                   <AlertCircle size={13} />
-                  {errorMessage.slice(0, 160)}
+                  <span>{errorMessage.slice(0, 160)}</span>
+                  {backendSyncError && pendingPost && !postSynced && (
+                    <button
+                      type="button"
+                      onClick={retryBackendSync}
+                      className="ml-auto shrink-0 text-primary-container hover:underline"
+                    >
+                      Retry sync
+                    </button>
+                  )}
                 </div>
               )}
               {kind === "MARKET" && oracleError && (
