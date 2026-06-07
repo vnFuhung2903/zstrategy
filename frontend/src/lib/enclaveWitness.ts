@@ -13,6 +13,7 @@ export interface PublicIntentMetadata {
   registry: Hex;
   commitmentHash: Hex;
   kind: IntentCircuitKind;
+  dcaGroupLockId?: Hex;
   tokenIn: Hex;
   tokenOut: Hex;
   size: string;

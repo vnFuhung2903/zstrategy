@@ -107,8 +107,6 @@ export async function listIntentsForOwner(owner: `0x${string}`): Promise<IntentR
 export interface DcaRoundRecord {
   /** Primary key — dcaCommitmentHash for this round. */
   commitmentHash: `0x${string}`;
-  /** Groups all rounds belonging to the same DCA intent. Equal to intentId. */
-  dcaGroupId: `0x${string}`;
   owner: `0x${string}`;
   /** Shared across all rounds in the group; the message signed by the wallet. */
   intentId: `0x${string}`;

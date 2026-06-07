@@ -24,6 +24,7 @@ export interface PostOrderIntentBody {
 
 export interface PostDcaIntentBody {
   chainId: number;
+  dcaGroupLockId: `0x${string}`;
   tokenIn: `0x${string}`;
   tokenOut: `0x${string}`;
   rounds: Array<{
