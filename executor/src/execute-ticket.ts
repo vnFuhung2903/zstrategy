@@ -23,8 +23,14 @@ interface ExecutionTicket {
   ticketExpiresAt: number;
   executor?: string;
   packageHash: string;
-  proverIds: string[];
-  proverSignature: string;
+  proverId: string;
+  proverReceipt: ProverReceipt;
+}
+
+interface ProverReceipt {
+  proverId: string;
+  ticketExpiresAt: number;
+  signature: string;
 }
 
 interface ClaimedTicket {
@@ -35,7 +41,7 @@ interface ClaimedTicket {
 }
 
 const REGISTRY_ABI = [
-  "function executeCommitment(bytes32 commitmentHash, bytes32 nullifier, bytes calldata proof, uint64 fillRef) external",
+  "function executeCommitment(bytes32 commitmentHash, bytes32 nullifier, bytes calldata proof, uint64 fillRef, tuple(bytes32 proverId,uint64 ticketExpiresAt,bytes signature) receipt) external",
 ];
 
 export async function main() {
@@ -65,11 +71,17 @@ export async function main() {
   const registry = new ethers.Contract(ticket.registry, REGISTRY_ABI, wallet);
   const executeCommitment = registry.getFunction("executeCommitment");
   const fillRef = parseUint64(ticket.fillRef, "fillRef");
+  const proverReceipt = {
+    proverId: ticket.proverReceipt.proverId,
+    ticketExpiresAt: BigInt(ticket.proverReceipt.ticketExpiresAt),
+    signature: ticket.proverReceipt.signature,
+  };
   const estimatedGas = await executeCommitment.estimateGas(
     ticket.commitmentHash,
     ticket.nullifier,
     ticket.proof,
     fillRef,
+    proverReceipt,
   );
   const gasLimit = estimatedGas * 12n / 10n;
 
@@ -84,15 +96,16 @@ export async function main() {
     ticket.nullifier,
     ticket.proof,
     fillRef,
+    proverReceipt,
     { gasLimit },
   );
   console.log(`Submitted: ${tx.hash}`);
 
-  const receipt = await tx.wait(1);
-  if (!receipt || receipt.status !== 1) {
+  const txReceipt = await tx.wait(1);
+  if (!txReceipt || txReceipt.status !== 1) {
     throw new Error(`execution transaction failed: ${tx.hash}`);
   }
-  console.log(`Executed in block ${receipt.blockNumber}`);
+  console.log(`Executed in block ${txReceipt.blockNumber}`);
 }
 
 async function claimTicket(url: string, executor: string): Promise<ClaimedTicket | null> {
@@ -134,8 +147,8 @@ export function parseClaimedTicket(body: unknown): ClaimedTicket {
       proof: requiredHexData(ticket.proof, "ticket.proof"),
       ticketExpiresAt: requiredSafeInteger(ticket.ticketExpiresAt, "ticket.ticketExpiresAt"),
       packageHash: requiredBytes32(ticket.packageHash, "ticket.packageHash"),
-      proverIds: requiredStringArray(ticket.proverIds, "ticket.proverIds"),
-      proverSignature: requiredHexData(ticket.proverSignature, "ticket.proverSignature"),
+      proverId: requiredBytes32(ticket.proverId, "ticket.proverId"),
+      proverReceipt: parseProverReceipt(ticket.proverReceipt, "ticket.proverReceipt"),
     },
   };
 
@@ -168,6 +181,12 @@ export function validateTicket(claimed: ClaimedTicket, expectedChainID: bigint, 
     throw new Error("ORDER_FILL ticket must use fillRef 0");
   }
   parseUint64(ticket.fillRef, "fillRef");
+  if (ticket.proverReceipt.proverId.toLowerCase() !== ticket.proverId.toLowerCase()) {
+    throw new Error("ticket proverReceipt does not match proverId");
+  }
+  if (ticket.proverReceipt.ticketExpiresAt !== ticket.ticketExpiresAt) {
+    throw new Error("ticket proverReceipt expiry does not match ticket expiry");
+  }
   if (ticket.executor && ticket.executor.toLowerCase() !== executorAddress.toLowerCase()) {
     throw new Error("ticket executor is bound to a different address");
   }
@@ -244,11 +263,13 @@ function requiredHexData(value: unknown, name: string): string {
   return raw;
 }
 
-function requiredStringArray(value: unknown, name: string): string[] {
-  if (!Array.isArray(value) || value.some(item => typeof item !== "string" || item.length === 0)) {
-    throw new Error(`${name} must be a string array`);
-  }
-  return value;
+function parseProverReceipt(value: unknown, name: string): ProverReceipt {
+  const receipt = asRecord(value, name);
+  return {
+    proverId: requiredBytes32(receipt.proverId, `${name}.proverId`),
+    ticketExpiresAt: requiredSafeInteger(receipt.ticketExpiresAt, `${name}.ticketExpiresAt`),
+    signature: requiredHexData(receipt.signature, `${name}.signature`),
+  };
 }
 
 if (require.main === module) {

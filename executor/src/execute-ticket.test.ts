@@ -34,6 +34,31 @@ test("rejects missing required ticket fields", () => {
   assert.throws(() => parseClaimedTicket(body), /ticket.nullifier is required/);
 });
 
+test("rejects pre-Phase-E ticket shape without proverReceipt", () => {
+  const body = ticketResponse({
+    ticket: {
+      proverIds: ["simulated"],
+      proverSignature: "0x99",
+    },
+  });
+  delete (body.data.ticket as Record<string, unknown>).proverId;
+  delete (body.data.ticket as Record<string, unknown>).proverReceipt;
+
+  assert.throws(() => parseClaimedTicket(body), /ticket.proverId is required/);
+});
+
+test("rejects proverReceipt that does not match top-level proverId", () => {
+  const body = ticketResponse();
+  (body.data.ticket as Record<string, unknown>).proverReceipt = {
+    proverId: hash("aa"),
+    ticketExpiresAt: (body.data.ticket as Record<string, unknown>).ticketExpiresAt,
+    signature: "0x99",
+  };
+  const claimed = parseClaimedTicket(body);
+
+  assert.throws(() => validateTicket(claimed, BigInt(CHAIN_ID), EXECUTOR), /proverReceipt does not match/);
+});
+
 test("rejects tickets bound to a different executor", () => {
   const claimed = parseClaimedTicket(ticketResponse({ ticket: { executor: addr("dd") } }));
 
@@ -51,6 +76,7 @@ function ticketResponse(overrides: {
   chainId?: number;
   ticket?: Record<string, unknown>;
 } = {}) {
+  const ticketExpiresAt = Math.floor(Date.now() / 1000) + 60;
   const ticket = {
     version: 1,
     chainId: overrides.chainId ?? CHAIN_ID,
@@ -60,10 +86,14 @@ function ticketResponse(overrides: {
     nullifier: hash("77"),
     fillRef: "0",
     proof: "0xabcd",
-    ticketExpiresAt: Math.floor(Date.now() / 1000) + 60,
+    ticketExpiresAt,
     packageHash: hash("88"),
-    proverIds: ["simulated"],
-    proverSignature: "0x99",
+    proverId: hash("99"),
+    proverReceipt: {
+      proverId: hash("99"),
+      ticketExpiresAt,
+      signature: "0x99",
+    },
     ...(overrides.ticket ?? {}),
   };
 
