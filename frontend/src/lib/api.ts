@@ -47,8 +47,14 @@ export interface ExecutionTicket {
   ticketExpiresAt: number;
   executor?:       `0x${string}`;
   packageHash:     `0x${string}`;
-  proverIds:       string[];
-  proverSignature: `0x${string}`;
+  proverId:        `0x${string}`;
+  proverReceipt:   ProverReceipt;
+}
+
+export interface ProverReceipt {
+  proverId:        `0x${string}`;
+  ticketExpiresAt: number;
+  signature:       `0x${string}`;
 }
 
 export interface ExecutorTicketEnvelope {
@@ -72,12 +78,23 @@ export interface ExecutorTicketEnvelope {
 
 async function requestJson(path: string, init: RequestInit = {}): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`, { cache: "no-store", ...init });
-  if (!res.ok) throw new Error(`API ${path}: ${res.status}`);
+  if (!res.ok) throw new Error(await apiErrorMessage(res, path));
   return res.json();
 }
 
 async function fetchJson(path: string): Promise<unknown> {
   return requestJson(path);
+}
+
+async function apiErrorMessage(res: Response, path: string): Promise<string> {
+  let detail = "";
+  try {
+    const body = await res.json() as { error?: string; reason?: string };
+    detail = body.reason ?? body.error ?? "";
+  } catch {
+    detail = await res.text().catch(() => "");
+  }
+  return `API ${path}: ${res.status}${detail ? ` - ${detail}` : ""}`;
 }
 
 export const api = {
@@ -110,16 +127,16 @@ export const api = {
     });
     return await fetchJson(`/api/v1/executor/tickets?${params.toString()}`) as { data: ExecutorTicketEnvelope[]; limit: number };
   },
-  claimExecutorTicket: async (chainId: number, executor: `0x${string}`): Promise<ExecutorTicketEnvelope | null> => {
+  claimExecutorTicket: async (chainId: number, executor: `0x${string}`, commitmentHash?: `0x${string}`): Promise<ExecutorTicketEnvelope | null> => {
     const params = new URLSearchParams({ chain_id: String(chainId) });
     const res = await fetch(`${BASE}/api/v1/executor/tickets/claim?${params.toString()}`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ executor }),
+      body:    JSON.stringify({ executor, ...(commitmentHash ? { commitmentHash } : {}) }),
       cache:   "no-store",
     });
     if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`API /api/v1/executor/tickets/claim: ${res.status}`);
+    if (!res.ok) throw new Error(await apiErrorMessage(res, "/api/v1/executor/tickets/claim"));
     const json = await res.json() as { data: ExecutorTicketEnvelope };
     return json.data;
   },

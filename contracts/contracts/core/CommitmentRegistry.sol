@@ -344,8 +344,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         // ── Release collateral to DEX adapter and swap ────────────────────
         SettlementAmounts memory amounts = _swapAndDistribute(commitmentHash, c, proverPayout);
 
-        // Phase E v2 execution settles fees from gross tokenOut. No GasVault
-        // debit occurs on this public executor path.
         emit CommitmentExecuted(commitmentHash, c.owner, msg.sender, nullifier, fillRef, amounts.grossAmountOut, c.kind);
         emit ExecutionFeesPaid(
             commitmentHash,
