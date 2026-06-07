@@ -69,36 +69,51 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 Bachelor thesis (IT4995, HUST). Privacy-preserving DeFi trading automation using ZK proofs and encrypted transaction submission. Renamed from ShadowBot.
 
-**Always read the docs before touching code.** Start with `docs/overview.md` (architecture, tech stack, execution flow), then `docs/DESIGN_NOTES.md` (design decisions, SRS issues, implementation order). These establish context that is not derivable from the code alone.
+**Always read the docs before touching code.** Start with `docs/overview.md` (current architecture, tech stack, execution flow), then `docs/DESIGN_NOTES.md` (current design decisions, SRS issues, implementation order), then `docs/tee-intent-architecture.md` (v2 TEE/private intent upgrade). These establish context that is not derivable from the code alone.
 
 ## What it does
 
-Users define trading strategies (limit orders, market orders, DCA, grid) locally in the browser. A cryptographic commitment hash is posted on-chain. A keeper monitors oracle prices and executes via ZK proof — strategy parameters are never revealed on-chain.
+Users define private execution intents (limit orders, market orders, DCA, grid, and future copy-trading actions) locally in the browser. A cryptographic commitment hash is posted on-chain. In the current implementation, a keeper executes via ZK proof. In the v2 target, a simulated TEE prover generates execution tickets from encrypted intent witnesses, and public executors submit valid proofs without learning private witness data.
+
+## v2 terminology and migration target
+
+Use `intent` as the consistent term for new/refactored code, docs, APIs, and UI. Legacy `strategy` names should remain only in historical docs or temporary compatibility code.
+
+Migration names:
+- `StrategyKind` → `IntentKind`
+- `PendingStrategy` → `PendingIntent`
+- `StrategyRepository` → `IntentRepository`
+- `pending_strategies` → `pending_intents`
+- `POST /api/v1/strategies` → `POST /api/v1/intents/order`
+- `POST /api/v1/dca-strategies` → `POST /api/v1/intents/dca`
+- "My Strategies" → "My Intents"
+- "Strategy Builder" → "Intent Builder"
+
+Do not add automatic DB data migration unless explicitly requested. The current v2 decision is to update the schema/code and let demo data be manually migrated or reset.
 
 ## Architecture (4 layers)
 
-- **Frontend** — Next.js 15 (App Router). Client-side only. Generates commitments + ZK proofs in WASM (bb.js). Calls contracts directly via wagmi v2 + viem. Posts strategy registration to Go backend (`backendApi.ts`), not keeper directly.
+- **Frontend** — Next.js 15 (App Router). Client-side only. Generates commitments + ZK proofs in WASM (bb.js). Calls contracts directly via wagmi v2 + viem. Posts intent registration to Go backend (`backendApi.ts`), not keeper directly.
 - **Smart contracts** — Arbitrum Sepolia. `CommitmentRegistry.sol` (register/execute/cancel), `CollateralVault.sol` (ERC20 collateral), `GasVault.sol` (prepaid ETH for keeper reimbursement), `OrderFillVerifier.sol` (auto-generated from Noir circuit), `UniswapV3Adapter.sol`.
+- **Enclave** — TypeScript package in `enclave/`. v2 simulated Nitro-style prover boundary. Exposes `IntentProverEnclave`, simulated attestation, X25519 + AES-256-GCM witness package encryption, and a Noir/Barretenberg proof generator adapter. This is the v2 path; do not refactor keeper code for v2 unless explicitly needed.
 - **Keeper** — Node.js 20+. **Trigger-based only — no ticker polling.** Serves `POST /api/shares` (store encrypted shares forwarded by Go backend) and `POST /api/execute` (triggered by Go backend when fill condition is met). On trigger: re-verifies condition independently, reconstructs `user_secret` via Shamir, generates ZK proof (bb.js/WASM), submits tx. Also serves `GET /api/keepers` for pubkeys used by frontend to encrypt shares.
-- **Backend** — Go (Gin + GORM). Indexes chain events into PostgreSQL. **Strategy lifecycle orchestrator**: accepts `POST /api/v1/strategies` and `POST /api/v1/dca-strategies` from frontend, stores private params in `pending_strategies` table, runs one goroutine per pending strategy to evaluate fill conditions (Chainlink oracle for ORDER_FILL, wall-clock for DCA), triggers keeper via `POST /api/execute` when condition is met. Redis for 30s stats cache. Prometheus metrics.
+- **Backend** — Go (Gin + GORM). Indexes chain events into PostgreSQL. Current implementation is an intent lifecycle orchestrator. v2 target is an intent relay/scheduler: accept `POST /api/v1/intents/order` and `POST /api/v1/intents/dca`, store public metadata plus encrypted witness material in `pending_intents`, and delegate private condition checks/proof generation to the simulated TEE prover. Redis for 30s stats cache. Prometheus metrics.
 
-### Strategy lifecycle (new architecture)
+### Intent lifecycle (v2 target)
 
 ```
-Frontend  →  POST /api/v1/strategies  →  Go backend
-                                              ↓ stores PendingStrategy (incl. limitPrice/scheduledLo/Hi)
-                                              ↓ forwards encryptedShares → POST /api/shares → Keeper
-                                              ↓ spawns per-commitment goroutine (polls every 30s)
-                                         when condition met:
-                                              ↓ marks EXECUTING, stops goroutine
-                                              ↓ POST /api/execute  →  Keeper
-                                                                         ↓ re-verifies condition
-                                                                         ↓ reconstructs user_secret (Shamir)
-                                                                         ↓ generates ZK proof (bb.js)
-                                                                         ↓ submitExecution → on-chain tx
+Frontend  →  POST /api/v1/intents/order or /api/v1/intents/dca  →  Go backend
+                                                                    ↓ stores PendingIntent public metadata + encrypted witness
+                                                                    ↓ schedules proof evaluation
+                                                              Simulated TEE prover
+                                                                    ↓ decrypts witness inside enclave boundary
+                                                                    ↓ verifies condition privately
+                                                                    ↓ generates ZK proof + execution ticket
+                                                              Public executor
+                                                                    ↓ executeCommitment → on-chain tx
 ```
 
-Chain events (register / cancel / execute / expire) are watched by Go backend's chain indexer. On execute/cancel/expire: `MonitorService.StopMonitoring(hash)` is called to stop the goroutine.
+Chain events (register / cancel / execute / expire) are watched by Go backend's chain indexer. On execute/cancel/expire, pending intent scheduling must stop or prune the encrypted witness package.
 
 ## ZK circuits
 
@@ -128,15 +143,15 @@ Oracle pair price formula (in `_readOraclePrice`, mirrored in keeper `fetchPairP
 
 ## Key design decisions
 
-- `user_secret` is **per-strategy**: `keccak256(sign(wallet, strategyId))` — wallet signature is the only persistent secret; secret is re-derivable, never stored.
+- `user_secret` is **per-intent**: `keccak256(sign(wallet, intentId))` — wallet signature is the only persistent secret; secret is re-derivable, never stored.
 - Keeper compensated via **prepaid ETH gas tank** (`GasVault.sol`) — Gelato 1Balance-style. User deposits native ETH; registry debits `gasUsed × tx.gasprice × 1.2` to keeper EOA at `executeCommitment`. Insufficient balance → revert; keeper preflights via `eth_call`. Self-execution skips the debit. Supersedes FR-KN-04's earlier "post-swap token fee" resolution — gas tank avoids circuit changes and keeper FX risk.
 - Collateral check in Solidity `require()`, not circuit (no privacy benefit in circuit).
 - `CollateralVault` uses OpenZeppelin virtual shares offset (`_decimalsOffset() = 3`) to prevent EIP-4626 inflation attacks.
-- Encrypted strategy backup (AES-GCM-256 + PBKDF2 → `.zstrategy` file) because strategy params are browser-local only.
+- Encrypted intent backup (AES-GCM-256 + PBKDF2 → `.zstrategy` file) because intent params are browser-local only.
 - `CommitmentRegistry` reads Chainlink at fill time — proof must be generated at fill time, not registration. Keeper (or user via self-execute) holds `user_secret` only during proof gen.
 - **Path B1 (threshold keeper):** `user_secret` is Shamir-split (N=5, k=3) and ECIES-encrypted per keeper. Leader reconstructs at fill time. No single keeper has standing access. Any k of N shares suffice (Shamir is position-independent).
 - **Phase 4 verifier dispatch:** `CommitmentKind` enum in registry (0 = ORDER_FILL, 1 = DCA); `executeCommitment` dispatches to the correct verifier. Clean separation — no circuit flag pollution.
-- **Private params in backend DB:** `limitPrice`, `direction`, `scheduledLo/Hi` are private strategy params. Go backend stores them in `pending_strategies` (PostgreSQL) to evaluate fill conditions. This is acceptable for the thesis demo since the user runs both services — the privacy goal is on-chain privacy, not backend privacy.
+- **v2 private witness handling:** `limitPrice`, `direction`, `scheduledLo/Hi`, `nonce`, `nullifier`, and `user_secret` are intent witness data. Phase A may still use the current B1 plaintext fields while routes/names migrate to `pending_intents`; Phase C must remove plaintext witness storage, keep only public metadata plus encrypted witness material, and route decryption/proving through the simulated TEE interface.
 - **Keeper re-verification:** Keeper independently re-verifies the fill condition on `POST /api/execute` before reconstructing secret or generating proof. This preserves the B1 security model even though Go triggers first.
 
 ## Common commands
@@ -146,6 +161,7 @@ Oracle pair price formula (in `_readOraclePrice`, mirrored in keeper `fetchPairP
 | contracts | `cd contracts && npx hardhat compile` | `npx hardhat test` | `npx hardhat node` |
 | contracts | — | `npx hardhat test --grep "CommitmentRegistry"` | `npx hardhat run scripts/deploy.ts --network <name>` |
 | circuits | `cd circuits/order_fill && nargo compile` | `nargo test` | — |
+| enclave | `cd enclave && npm run build` | `npm test` | — |
 | keeper | `cd keeper && npm run build` | `npm test` | `npm run dev` |
 | frontend | `cd frontend && npm run build` | — | `npm run dev` |
 | backend | `cd backend && go build ./...` | `go test ./...` | `go run cmd/server/main.go` |
@@ -170,6 +186,7 @@ Frontend `predev`/`prebuild` runs `scripts/copy-circuit.mjs` which copies `circu
 | 2 | Limit orders E2E (keeper + frontend + backend) | ✅ Complete (real UltraHonk; bb.js in keeper + browser; encrypted backup; Path B1 single-process simulation) |
 | 3 | Market Order | ✅ Complete — frontend-only kind discriminator; reuses OrderFill circuit with sentinel limit price (supersedes earlier SL/TP work, which has been removed) |
 | 4 | Private DCA | ✅ Complete — DCA circuit compiled, registry dispatch, DCA form, backend wall-clock monitor, keeper DCA proof gen |
+| v2 | Private Intent + Simulated TEE refactor | 🔲 In progress — Phase A intent naming/routes/schema started; Phase B `/enclave` boundary started with simulated attestation, encrypted witness packages, and proof adapter; next phases wire backend relay/scheduler and ticket-based public execution |
 | 5 | Grid Trading | 🔲 Planned |
 | 6 | Multi-chain (Base Sepolia) | 🔲 Planned |
 
@@ -177,12 +194,12 @@ Frontend `predev`/`prebuild` runs `scripts/copy-circuit.mjs` which copies `circu
 
 Frontend-only `kind` discriminator alongside `LIMIT`. **No circuit, no contract, no keeper changes.** Mechanics:
 
-- `StrategyKind = "LIMIT" | "MARKET"` in `frontend/src/lib/strategyStore.ts` (SL/TP removed).
+- Current code has `IntentKind = "LIMIT" | "MARKET"` in `frontend/src/lib/intentStore.ts` (SL/TP removed).
 - Commitment uses a sentinel price that trivially satisfies the OrderFill fill check:
   - BUY  → `price = u64.max` → `oracle ≤ price` always true
   - SELL → `price = 0`       → `oracle ≥ price` always true
 - On-chain the commitment is still registered as `kind = 0 (ORDER_FILL)`; the contract's `_readOraclePrice` and keeper's oracle re-verify both trivially pass.
-- Backend `PendingStrategy.Kind = "MARKET"` (new constant in `domain/entity.go`). The MonitorService fires `POST /api/execute` on the first tick instead of polling — `isFillConditionMet` returns `true` immediately for MARKET. When forwarding to the keeper, the kind is rewritten to `"ORDER_FILL"` on the wire (`monitor.go:triggerKeeper`).
+- Current backend has `PendingIntent.Kind = "MARKET"` in `domain/entity.go`.
 - User-controlled slippage selector (0.5% / 1% / 2% / 5%, default 1%) applies to both LIMIT and MARKET `minOut`. Live Chainlink "quote per base" price is fetched client-side for MARKET to compute the est-output + minOut.
 - MARKET orders use a fixed 10-minute expiry so an unfilled market order doesn't linger.
 
@@ -205,7 +222,7 @@ Every wagmi write hook in `frontend/src/hooks/` wires `useTxToast` (`hooks/useTx
 - **Deploy** (`contracts/scripts/deploy.ts`): deploys `DCAVerifier`, calls `registry.setVerifier(1, dcaVerifier)`.
 - **Frontend** (`frontend/src/app/(dashboard)/dca/page.tsx`): full DCA form — pair, side, size/round, interval, jitter preview, batch registration, IndexedDB save with `dcaGroupId`.
 - **Keeper** (`keeper/src/zk/dca.ts`, `keeper/src/api/server.ts`): inline time-window re-verify in `/api/execute`, DCA proof generation in `submitter.ts` (dispatches on `order.kind`).
-- **Backend**: `ExecutionRecord.Kind` (`domain/entity.go`), indexer decodes `kind` from `CommitmentRegistered` event, `GetStatistics` returns per-kind breakdown, `List` accepts `?kind=DCA` filter. SQL migration: `002_add_kind_to_execution_records`. `PendingStrategy` entity + `003_add_pending_strategies` migration. `MonitorService` (`service/monitor.go`) runs per-commitment goroutines; `RegisterStrategy`/`RegisterDcaGroup` handlers accept POST from frontend.
+- **Backend**: current code has `ExecutionRecord.Kind` (`domain/entity.go`), indexer decodes `kind` from `CommitmentRegistered` event, `GetStatistics` returns per-kind breakdown, `List` accepts `?kind=DCA` filter, and `PendingIntent` + `pending_intents`. v2 intent routes are `POST /api/v1/intents/order` and `POST /api/v1/intents/dca`.
 
 DCA jitter: `scheduled_lo = center − 0.15×interval`, `scheduled_hi = center + 0.15×interval`. Single wallet signature per DCA group; each round gets its own `nonce`.
 
@@ -220,6 +237,7 @@ frontend/    # Next.js 15 — app/, components/, hooks/, lib/, providers/
 backend/     # Go — cmd/server/, internal/{domain,service,repository,indexer,handler}
 contracts/   # Hardhat — core/, adapters/, interfaces/, scripts/deploy.ts
 keeper/      # Node.js keeper service — api/, chain/, zk/, threshold/, store/, execution/
+enclave/     # TypeScript simulated Nitro-style v2 prover boundary
 circuits/    # Noir ZK circuits — order_fill/ (complete), dca/ (Phase 4)
 docs/        # overview.md, DESIGN_NOTES.md
 ```
