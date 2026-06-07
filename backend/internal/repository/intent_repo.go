@@ -130,7 +130,7 @@ func (r *IntentRepo) ResetEvaluation(ctx context.Context, commitmentHash string)
 		Where("commitment_hash = ? AND status = ?", commitmentHash, domain.IntentEvaluating).
 		Updates(map[string]any{
 			"status":            domain.IntentPending,
-			"ticket":            "",
+			"ticket":            "null",
 			"ticket_expires_at": nil,
 			"leased_by":         "",
 			"lease_expires_at":  nil,
@@ -147,7 +147,7 @@ func (r *IntentRepo) ResetTicket(ctx context.Context, commitmentHash, reason str
 		Where("commitment_hash = ? AND status = ?", commitmentHash, domain.IntentTicketReady).
 		Updates(map[string]any{
 			"status":            domain.IntentPending,
-			"ticket":            "",
+			"ticket":            "null",
 			"ticket_expires_at": nil,
 			"leased_by":         "",
 			"lease_expires_at":  nil,
@@ -196,7 +196,7 @@ func (r *IntentRepo) ResetStuckExecuting(ctx context.Context, olderThan time.Dur
 		Where("commitment_hash IN ? AND status = ?", hashes, domain.IntentEvaluating).
 		Updates(map[string]any{
 			"status":            domain.IntentPending,
-			"ticket":            "",
+			"ticket":            "null",
 			"ticket_expires_at": nil,
 			"leased_by":         "",
 			"lease_expires_at":  nil,
@@ -256,7 +256,7 @@ func (r *IntentRepo) ResetExpiredTickets(ctx context.Context, now time.Time) ([]
 		Where("commitment_hash IN ? AND status = ? AND ticket_expires_at IS NOT NULL AND ticket_expires_at <= ?", hashes, domain.IntentTicketReady, now).
 		Updates(map[string]any{
 			"status":            domain.IntentPending,
-			"ticket":            "",
+			"ticket":            "null",
 			"ticket_expires_at": nil,
 			"leased_by":         "",
 			"lease_expires_at":  nil,

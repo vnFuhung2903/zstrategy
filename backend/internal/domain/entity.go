@@ -18,15 +18,16 @@ type PendingIntent struct {
 	ChainID         int64      `gorm:"not null"`
 	Registry        string     `gorm:"size:42;not null"`
 	Kind            IntentKind `gorm:"size:20;not null;default:'LIMIT'"`
+	DCAGroupLockID  string     `gorm:"size:66;index"`
 	TokenIn         string     `gorm:"size:42;not null"`
 	TokenOut        string     `gorm:"size:42;not null"`
 	Size            string     `gorm:"not null"`
 	MinOut          string     `gorm:"not null"`
 	Expiry          int64      `gorm:"not null"`
 	WitnessPackage  string     `gorm:"type:jsonb;not null"`
-	Ticket          string     `gorm:"type:jsonb"`
+	Ticket          string     `gorm:"type:jsonb;default:'null'"`
+	LeasedBy        string     `gorm:"size:42"`
 	TicketExpiresAt *time.Time
-	LeasedBy        string `gorm:"size:42"`
 	LeaseExpiresAt  *time.Time
 	LastError       string       `gorm:"type:text"`
 	Status          IntentStatus `gorm:"size:20;not null;default:'PENDING'"`
@@ -65,6 +66,7 @@ type PublicIntentMetadata struct {
 	Registry       string            `json:"registry"`
 	CommitmentHash string            `json:"commitmentHash"`
 	Kind           IntentCircuitKind `json:"kind"`
+	DCAGroupLockID string            `json:"dcaGroupLockId,omitempty"`
 	TokenIn        string            `json:"tokenIn"`
 	TokenOut       string            `json:"tokenOut"`
 	Size           string            `json:"size"`
@@ -104,8 +106,14 @@ type ExecutionTicket struct {
 	TicketExpiresAt int64             `json:"ticketExpiresAt"`
 	Executor        string            `json:"executor,omitempty"`
 	PackageHash     string            `json:"packageHash"`
-	ProverIDs       []string          `json:"proverIds"`
-	ProverSignature string            `json:"proverSignature"`
+	ProverID        string            `json:"proverId"`
+	ProverReceipt   ProverReceipt     `json:"proverReceipt"`
+}
+
+type ProverReceipt struct {
+	ProverID        string `json:"proverId"`
+	TicketExpiresAt int64  `json:"ticketExpiresAt"`
+	Signature       string `json:"signature"`
 }
 
 // ExecutionRecord is an anonymized on-chain event record.
