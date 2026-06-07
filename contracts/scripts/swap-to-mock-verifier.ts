@@ -54,7 +54,6 @@ interface Deployment {
   dcaVerifier:        string;
   collateralVault:    string;
   commitmentRegistry: string;
-  gasVault:           string;
   dexAdapter:         string;
   deployedAt:         string;
   [k: string]: unknown;

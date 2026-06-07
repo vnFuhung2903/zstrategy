@@ -6,7 +6,7 @@
  *   - You ran `bb write_solidity` to regenerate OrderFillVerifier.sol /
  *     DCAVerifier.sol (e.g. because the prover-side bb.js was bumped and the
  *     on-chain VK no longer matches the new wire format).
- *   - You don't want to redeploy CommitmentRegistry, CollateralVault, GasVault,
+ *   - You don't want to redeploy CommitmentRegistry, CollateralVault,
  *     or the DEX adapter — preserving on-chain commitments / collateral / gas
  *     tank balances and avoiding any frontend address rotation.
  *
@@ -37,7 +37,6 @@ interface Deployment {
   dcaVerifier:        string;
   collateralVault:    string;
   commitmentRegistry: string;
-  gasVault:           string;
   dexAdapter:         string;
   deployedAt:         string;
   // Optional fields that may exist on older artifacts; preserved verbatim.

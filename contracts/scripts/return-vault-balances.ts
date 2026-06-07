@@ -1,8 +1,7 @@
 /**
  * Return a user's free collateral and prepaid gas before vault redeploy.
  *
- * Run with the user's wallet key, because CollateralVault.withdraw() and
- * GasVault.withdraw() can only withdraw the caller's own balances:
+ * Run with:
  *
  *   npx hardhat run scripts/return-vault-balances.ts --network arbitrumSepolia
  *
@@ -152,18 +151,15 @@ async function main() {
     "collateralVault",
     deployment,
   );
-  const gasVault = addressFromEnvOrDeployment("GAS_VAULT_ADDRESS", "gasVault", deployment);
   const tokens = collectTokenAddresses(deployment);
 
   const registry = await ethers.getContractAt("CommitmentRegistry", commitmentRegistry, signer);
   const collateral = await ethers.getContractAt("CollateralVault", collateralVault, signer);
-  const gas = await ethers.getContractAt("GasVault", gasVault, signer);
 
   console.log(`\nReturning vault balances on ${network.name}`);
   console.log(`User:               ${user}`);
   console.log(`CommitmentRegistry: ${commitmentRegistry}`);
   console.log(`CollateralVault:    ${collateralVault}`);
-  console.log(`GasVault:           ${gasVault}\n`);
 
   const expiredCommitments = parseBytes32List("EXPIRED_COMMITMENTS", process.env.EXPIRED_COMMITMENTS);
   if (expiredCommitments.length > 0) {
@@ -191,15 +187,6 @@ async function main() {
     console.log(`Withdrawing collateral ${token}: ${balance.toString()}`);
     await (await collateral.withdraw(token, balance)).wait();
   }
-
-  const gasBalance: bigint = await gas.balanceOf(user);
-  if (gasBalance === 0n) {
-    console.log("Gas balance: 0");
-  } else {
-    console.log(`Withdrawing gas balance: ${gasBalance.toString()} wei`);
-    await (await gas.withdraw(gasBalance)).wait();
-  }
-
   console.log("\nDone.");
 }
 
