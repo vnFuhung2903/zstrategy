@@ -118,7 +118,6 @@ export default function OrdersPage() {
   const { register, isPending, isConfirming, isSuccess, error } = useRegisterCommitment();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
 
-  // Phase E public executors pay gas upfront and receive output-token fees at settlement.
   // Re-roll nonce on (re)mount so a new submission starts fresh.
   useEffect(() => {
     nonceRef.current = randomBytes32();

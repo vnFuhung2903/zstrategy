@@ -775,11 +775,7 @@ describe("CommitmentRegistry", () => {
     });
   });
 
-  // ── executeCommitment with gas tank wired ──────────────────────────────
-  //
-  // Phase E registry admin controls for prover receipts and fee rates.
-
-  describe("Phase E admin controls", () => {
+  describe("Prover & FeeRates setting", () => {
     it("guardian can update prover payout, signer, and active status", async () => {
       const nextProverId = ethers.keccak256(ethers.toUtf8Bytes("next-prover"));
 
