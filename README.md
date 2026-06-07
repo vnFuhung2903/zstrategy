@@ -43,7 +43,7 @@ Current scope:
 - Private market orders using the same order-fill circuit with sentinel prices.
 - Private DCA rounds with non-overlap checks and off-chain same-group proof locking.
 - Encrypted witness packages.
-- Simulated Nitro-style TEE/prover boundary.
+- Simulated Nitro-style TEE/prover boundary: a local software boundary that imitates the data flow and interface of an AWS Nitro Enclave design, but is not a deployed AWS Nitro Enclave and does not provide hardware isolation.
 - Public execution ticket queue, claim endpoint, frontend executor route, and standalone CLI executor.
 - On-chain settlement through `CommitmentRegistry`, `CollateralVault`, verifier contracts, and a DEX adapter.
 - Output-token executor/prover fees from gross swap output.

@@ -4,10 +4,10 @@ Behavioral guidelines for coding agents working in this repository.
 
 ## Project Context
 
-- `docs/README.md` is the single source of truth for current zstrategy system behavior, architecture, terminology, commands, APIs, and thesis writing.
-- Read `docs/README.md` before touching code or current documentation.
+- `README.md` is the single source of truth for current zstrategy system behavior, architecture, terminology, commands, APIs, and thesis writing.
+- Read `README.md` before touching code or current documentation.
 - Do not read docs under `docs/archive/` by default. Archived docs are historical only; read them only when the user explicitly asks for historical context.
-- If any other document conflicts with `docs/README.md`, prefer `docs/README.md`.
+- If any other document conflicts with `README.md`, prefer `README.md`.
 - Use `intent` for current product, code, API, and UI language. Treat `strategy` as legacy terminology unless the user explicitly asks about historical material.
 
 ## 1. Think Before Coding
