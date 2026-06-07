@@ -6,7 +6,8 @@
     "dev": "next dev -p 5173",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:dca": "node --experimental-strip-types --test test/*.test.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.7",
