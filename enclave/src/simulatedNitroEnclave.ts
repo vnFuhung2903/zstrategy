@@ -17,7 +17,6 @@ import { decryptWitnessPackage } from "./internal/decryptWitnessPackage";
 import { assertValidPackageHash } from "./witnessPackage";
 import { sha256Hex, toHex } from "./encoding";
 
-const DEFAULT_IMAGE_DIGEST = "0x6b8b8f3d5d5c4f3a7f9e22a9df7f6156ad43db2f61aa78f40b85d5ea7f3c0b61" as const;
 const PROVER_RECEIPT_TYPES = {
   ProverReceipt: [
     { name: "commitmentHash", type: "bytes32" },

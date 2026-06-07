@@ -23,6 +23,7 @@
   "devDependencies": {
     "@noble/hashes": "^1.8.0",
     "@types/node": "^20.19.42",
+    "dotenv": "^17.4.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5"
   }
