@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Wallet, keccak256, verifyTypedData } from "ethers";
 import {
   SimulatedNitroIntentProverEnclave,
   WITNESS_ENCRYPTION_SCHEME,
@@ -7,6 +8,7 @@ import {
   createEncryptedWitnessPackage,
   verifyAttestationReport,
   type DcaProofInput,
+  type ExecutionTicket,
   type Hex,
   type OrderFillProofInput,
   type ProofGenerator,
@@ -30,11 +32,29 @@ class StubProofGenerator implements ProofGenerator {
   }
 }
 
+const PROVER_PRIVATE_KEY = "0x59c6995e998f97a5a0044966f0945387db4d7c36e0fe4c3aa4d5b3fb3e39a90d" as Hex;
+const PROVER_ID = bytes32("99");
+const IMAGE_DIGEST = bytes32("aa");
+const PROVER_RECEIPT_TYPES = {
+  ProverReceipt: [
+    { name: "commitmentHash", type: "bytes32" },
+    { name: "nullifier", type: "bytes32" },
+    { name: "proofHash", type: "bytes32" },
+    { name: "fillRef", type: "uint64" },
+    { name: "ticketExpiresAt", type: "uint64" },
+    { name: "kind", type: "uint8" },
+    { name: "proverId", type: "bytes32" },
+  ],
+};
+
 test("simulated Nitro attestation binds nonce, PCRs, image digest, and enclave key", async () => {
   const root = createDevRootKeypair();
   const enclave = new SimulatedNitroIntentProverEnclave({
     devRoot: root,
     proofGenerator: new StubProofGenerator(),
+    proverSigningPrivateKey: PROVER_PRIVATE_KEY,
+    proverId: PROVER_ID,
+    imageDigest: IMAGE_DIGEST,
   });
   const nonce = bytes32("11");
 
@@ -65,7 +85,13 @@ test("simulated Nitro attestation binds nonce, PCRs, image digest, and enclave k
 test("ORDER_FILL witness decrypts only inside enclave and returns a ticket when ready", async () => {
   const root = createDevRootKeypair();
   const proofGenerator = new StubProofGenerator();
-  const enclave = new SimulatedNitroIntentProverEnclave({ devRoot: root, proofGenerator });
+  const enclave = new SimulatedNitroIntentProverEnclave({
+    devRoot: root,
+    proofGenerator,
+    proverId: PROVER_ID,
+    proverSigningPrivateKey: PROVER_PRIVATE_KEY,
+    imageDigest: IMAGE_DIGEST,
+  });
   const nonce = bytes32("33");
   const report = await enclave.attest({ nonce });
   const metadata = orderMetadata();
@@ -113,6 +139,14 @@ test("ORDER_FILL witness decrypts only inside enclave and returns a ticket when 
     assert.equal(ticket.nullifier, witness.nullifier);
     assert.equal(ticket.fillRef, "0");
     assert.equal(ticket.proof, `0x${"aa".repeat(64)}`);
+    assert.equal(ticket.proverId, PROVER_ID);
+    assert.equal(ticket.proverReceipt.proverId, PROVER_ID);
+    assert.equal(ticket.proverReceipt.ticketExpiresAt, ticket.ticketExpiresAt);
+    assert.equal(recoverReceiptSigner(metadata, ticket, 0), new Wallet(PROVER_PRIVATE_KEY).address);
+    assert.notEqual(
+      recoverReceiptSigner(metadata, ticket, 0, { proofHash: keccak256("0x1234") }),
+      new Wallet(PROVER_PRIVATE_KEY).address,
+    );
   }
   assert.equal(proofGenerator.orderFillInputs.length, 1);
   assert.equal(proofGenerator.orderFillInputs[0].oraclePrice, 99n);
@@ -121,10 +155,17 @@ test("ORDER_FILL witness decrypts only inside enclave and returns a ticket when 
 test("DCA witness only produces a ticket inside its private window", async () => {
   const root = createDevRootKeypair();
   const proofGenerator = new StubProofGenerator();
-  const enclave = new SimulatedNitroIntentProverEnclave({ devRoot: root, proofGenerator });
+  const enclave = new SimulatedNitroIntentProverEnclave({
+    devRoot: root,
+    proofGenerator,
+    proverId: PROVER_ID,
+    proverSigningPrivateKey: PROVER_PRIVATE_KEY,
+    imageDigest: IMAGE_DIGEST,
+  });
   const nonce = bytes32("77");
   const report = await enclave.attest({ nonce });
-  const metadata = dcaMetadata();
+  const groupId = bytes32("bb");
+  const metadata = { ...dcaMetadata(), dcaGroupLockId: bytes32("bc") };
   const witness = {
     kind: "DCA" as const,
     scheduledLo: 1700000100,
@@ -132,7 +173,7 @@ test("DCA witness only produces a ticket inside its private window", async () =>
     nonce: bytes32("88"),
     userSecret: bytes32("99"),
     nullifier: bytes32("aa"),
-    dcaGroupId: bytes32("bb"),
+    dcaGroupId: groupId,
     roundIndex: 0,
   };
   const pkg = createEncryptedWitnessPackage(metadata, witness, report, {
@@ -141,6 +182,9 @@ test("DCA witness only produces a ticket inside its private window", async () =>
     imageDigest: enclave.imageDigest,
     pcrs: enclave.pcrs,
   });
+
+  assert.equal("dcaGroupId" in pkg.aad, false);
+  assert.doesNotMatch(JSON.stringify(pkg.aad).toLowerCase(), new RegExp(groupId.slice(2, 18)));
 
   await enclave.importPackage(pkg);
   assert.equal(
@@ -162,6 +206,8 @@ test("DCA witness only produces a ticket inside its private window", async () =>
   if (ticket !== "NOT_READY") {
     assert.equal(ticket.fillRef, "1700000150");
     assert.equal(ticket.proof, `0x${"bb".repeat(64)}`);
+    assert.equal(ticket.proverId, PROVER_ID);
+    assert.equal(recoverReceiptSigner(metadata, ticket, 1), new Wallet(PROVER_PRIVATE_KEY).address);
   }
   assert.equal(proofGenerator.dcaInputs.length, 1);
 });
@@ -169,7 +215,7 @@ test("DCA witness only produces a ticket inside its private window", async () =>
 test("DCA import rejects overlapping same-group windows inside enclave boundary", async () => {
   const root = createDevRootKeypair();
   const proofGenerator = new StubProofGenerator();
-  const enclave = new SimulatedNitroIntentProverEnclave({ devRoot: root, proofGenerator });
+  const enclave = new SimulatedNitroIntentProverEnclave({ devRoot: root, proofGenerator, proverSigningPrivateKey: PROVER_PRIVATE_KEY, imageDigest: IMAGE_DIGEST, proverId: PROVER_ID });
   const report = await enclave.attest({ nonce: bytes32("31") });
   const groupId = bytes32("32");
 
@@ -201,12 +247,44 @@ test("DCA import rejects overlapping same-group windows inside enclave boundary"
   );
 });
 
+test("DCA import accepts non-overlapping same-group windows", async () => {
+  const root = createDevRootKeypair();
+  const proofGenerator = new StubProofGenerator();
+  const enclave = new SimulatedNitroIntentProverEnclave({ devRoot: root, proofGenerator, proverSigningPrivateKey: PROVER_PRIVATE_KEY, imageDigest: IMAGE_DIGEST, proverId: PROVER_ID });
+  const report = await enclave.attest({ nonce: bytes32("39") });
+  const groupId = bytes32("3a");
+
+  await enclave.importPackage(createDcaPackage({
+    root,
+    enclave,
+    report,
+    metadata: { ...dcaMetadata(), commitmentHash: bytes32("3b") },
+    groupId,
+    scheduledLo: 1700000100,
+    scheduledHi: 1700000200,
+    nonceValue: bytes32("3c"),
+    nullifier: bytes32("3d"),
+  }));
+
+  await enclave.importPackage(createDcaPackage({
+    root,
+    enclave,
+    report,
+    metadata: { ...dcaMetadata(), commitmentHash: bytes32("3e") },
+    groupId,
+    scheduledLo: 1700000201,
+    scheduledHi: 1700000300,
+    nonceValue: bytes32("3f"),
+    nullifier: bytes32("40"),
+  }));
+});
+
 test("DCA evaluation holds a private per-group proof lock", async () => {
   const root = createDevRootKeypair();
   const proofGenerator = new StubProofGenerator();
   let release!: () => void;
   proofGenerator.dcaDelay = new Promise<void>(resolve => { release = resolve; });
-  const enclave = new SimulatedNitroIntentProverEnclave({ devRoot: root, proofGenerator });
+  const enclave = new SimulatedNitroIntentProverEnclave({ devRoot: root, proofGenerator, proverSigningPrivateKey: PROVER_PRIVATE_KEY, imageDigest: IMAGE_DIGEST, proverId: PROVER_ID });
   const report = await enclave.attest({ nonce: bytes32("41") });
   const groupId = bytes32("42");
   const first = createDcaPackage({
@@ -259,6 +337,9 @@ test("witness package rejects tampered public metadata before decryption", async
   const enclave = new SimulatedNitroIntentProverEnclave({
     devRoot: root,
     proofGenerator: new StubProofGenerator(),
+    proverSigningPrivateKey: PROVER_PRIVATE_KEY,
+    proverId: PROVER_ID,
+    imageDigest: IMAGE_DIGEST,
   });
   const nonce = bytes32("cc");
   const report = await enclave.attest({ nonce });
@@ -303,6 +384,9 @@ test("witness encryption requires nonce, image digest, and PCR allowlist checks"
   const enclave = new SimulatedNitroIntentProverEnclave({
     devRoot: root,
     proofGenerator: new StubProofGenerator(),
+    proverSigningPrivateKey: PROVER_PRIVATE_KEY,
+    proverId: PROVER_ID,
+    imageDigest: IMAGE_DIGEST,
   });
   const nonce = bytes32("10");
   const report = await enclave.attest({ nonce });
@@ -357,13 +441,14 @@ function createDcaPackage(args: {
   report: Awaited<ReturnType<SimulatedNitroIntentProverEnclave["attest"]>>;
   metadata: PublicIntentMetadata;
   groupId: Hex;
+  groupLockId?: Hex;
   scheduledLo: number;
   scheduledHi: number;
   nonceValue: Hex;
   nullifier: Hex;
 }) {
   return createEncryptedWitnessPackage(
-    args.metadata,
+    { ...args.metadata, dcaGroupLockId: args.groupLockId ?? bytes32("50") },
     {
       kind: "DCA",
       scheduledLo: args.scheduledLo,
@@ -381,6 +466,34 @@ function createDcaPackage(args: {
       imageDigest: args.enclave.imageDigest,
       pcrs: args.enclave.pcrs,
     },
+  );
+}
+
+function recoverReceiptSigner(
+  metadata: PublicIntentMetadata,
+  ticket: ExecutionTicket,
+  kind: 0 | 1,
+  overrides: Record<string, unknown> = {},
+): string {
+  return verifyTypedData(
+    {
+      name: "zstrategy.ProverReceipt",
+      version: "1",
+      chainId: metadata.chainId,
+      verifyingContract: metadata.registry,
+    },
+    PROVER_RECEIPT_TYPES,
+    {
+      commitmentHash: ticket.commitmentHash,
+      nullifier: ticket.nullifier,
+      proofHash: keccak256(ticket.proof),
+      fillRef: BigInt(ticket.fillRef),
+      ticketExpiresAt: BigInt(ticket.proverReceipt.ticketExpiresAt),
+      kind,
+      proverId: ticket.proverId,
+      ...overrides,
+    },
+    ticket.proverReceipt.signature,
   );
 }
 
