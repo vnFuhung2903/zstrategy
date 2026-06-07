@@ -12,7 +12,6 @@ import { Input } from "@/components/ui/Input";
 import { Lock, Info, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useFreeBalance, formatUnits as fmtUnits } from "@/hooks/useVault";
-import { useGasBalance, PER_EXECUTION_ETH_ESTIMATE } from "@/hooks/useGasVault";
 import { DEFAULT_PAIR, type TradingPair } from "@/lib/tradingPairs";
 import { TokenPairSelect } from "@/components/ui/TokenPairSelect";
 import { useRegisterCommitment } from "@/hooks/useRegistry";
@@ -114,19 +113,10 @@ export default function OrdersPage() {
   const direction = side === "SELL" ? DIRECTION_SELL : DIRECTION_BUY;
 
   const { data: tokenInBalance } = useFreeBalance(tokenIn.address);
-  const { data: gasBalance }     = useGasBalance();
   const { register, isPending, isConfirming, isSuccess, error } = useRegisterCommitment();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
 
-  // Executor-gas precondition. We require >= 1 estimated fill in the tank before
-  // accepting a new intent — otherwise public execution will revert on
-  // executeCommitment and the intent will sit PENDING until the user funds.
-  // (One commitment ⇒ one fill ⇒ one PER_EXECUTION_ETH_ESTIMATE.)
-  // Treat the pre-query "undefined" state as a shortfall so a fast clicker
-  // can't submit before the balance read resolves.
-  const gasShortfall =
-    gasBalance === undefined || gasBalance < PER_EXECUTION_ETH_ESTIMATE;
-
+  // Phase E public executors pay gas upfront and receive output-token fees at settlement.
   // Re-roll nonce on (re)mount so a new submission starts fresh.
   useEffect(() => {
     nonceRef.current = randomBytes32();
@@ -178,13 +168,15 @@ export default function OrdersPage() {
     return side === "SELL" ? size * referencePriceFloat : size / referencePriceFloat;
   }, [amount, referencePriceFloat, side]);
 
-  const minOutBig = useMemo(() => {
-    if (expectedOutFloat <= 0) return BigInt(0);
-    try {
-      const factor = (100 - slippage) / 100;
-      return parseUnits((expectedOutFloat * factor).toFixed(tokenOut.decimals), tokenOut.decimals);
-    } catch { return BigInt(0); }
-  }, [expectedOutFloat, slippage, tokenOut.decimals]);
+  // const minOutBig = useMemo(() => {
+  //   if (expectedOutFloat <= 0) return BigInt(0);
+  //   try {
+  //     const factor = (100 - slippage) / 100;
+  //     return parseUnits((expectedOutFloat * factor).toFixed(tokenOut.decimals), tokenOut.decimals);
+  //   } catch { return BigInt(0); }
+  // }, [expectedOutFloat, slippage, tokenOut.decimals]);
+
+  const minOutBig = BigInt(0);
 
   const [now, setNow] = useState<number | null>(null);
 
@@ -669,12 +661,6 @@ export default function OrdersPage() {
                   Oracle unavailable: {oracleError.slice(0, 140)}
                 </div>
               )}
-              {gasShortfall && (
-                <div className="mt-3 flex items-center gap-2 text-xs text-secondary">
-                  <AlertCircle size={13} />
-                  Gas tank too low for executor reimbursement — top up on the Vault page before submitting.
-                </div>
-              )}
 
               {/* Action — button stays in its ready state across submissions.
                   Success is announced via the global toast (Sonner) from the
@@ -721,7 +707,6 @@ export default function OrdersPage() {
                     !isConnected
                     || busy
                     || amountBig === BigInt(0)
-                    || gasShortfall
                     || (kind === "LIMIT"  && priceBig === BigInt(0))
                     || (kind === "MARKET" && marketOraclePrice === null)
                   }
@@ -729,9 +714,7 @@ export default function OrdersPage() {
                 >
                   {busy
                     ? <><Loader2 size={14} className="animate-spin" />{waitingForMarketSync ? "Syncing..." : isSigning ? "Signing…" : isConfirming ? "Confirming…" : "Submitting…"}</>
-                    : gasShortfall
-                      ? <><Lock size={14} />Top up gas tank</>
-                      : <><Lock size={14} />Sign &amp; Submit Commitment</>
+                    : <><Lock size={14} />Sign &amp; Submit Commitment</>
                   }
                 </Button>
               </div>
