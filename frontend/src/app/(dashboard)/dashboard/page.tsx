@@ -1,171 +1,257 @@
 "use client";
 
 import Link from "next/link";
-import { Activity, ArrowRight, Clock, Database, DollarSign, Plus, Repeat2, Shield, TrendingUp, Wallet, WifiOff } from "lucide-react";
+import { Activity, BarChart3, Database, DollarSign, Loader2, Repeat2, Shield, WifiOff } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
-import { useStats } from "@/hooks/useBackendApi";
+import { Badge } from "@/components/ui/Badge";
+import { Card } from "@/components/ui/Card";
+import { StatusChip } from "@/components/ui/StatusChip";
+import { useDashboardAnalytics } from "@/hooks/api/useDashboardApi";
 import { useVaultTvl } from "@/hooks/useVaultTvl";
-import { formatUSD } from "@/lib/utils";
+import { type DashboardDistributionItem, type IntentKind } from "@/lib/api";
+import { formatDistanceToNow } from "@/lib/timeUtils";
+import { cn, formatUSD } from "@/lib/utils";
 
-function MetricSkeleton() {
-  return <div className="h-24 rounded-sm bg-surface-container-high animate-pulse" />;
+function formatCount(value: number | undefined) {
+  return (value ?? 0).toLocaleString("en-US");
 }
 
-function metricValue(value: number | undefined, fallback = "0") {
-  return value === undefined ? fallback : value.toLocaleString("en-US");
+function kindLabel(kind: IntentKind) {
+  if (kind === "LIMIT") return "Limit";
+  if (kind === "MARKET") return "Market";
+  return "DCA";
+}
+
+function MetricSkeleton() {
+  return <div className="h-36 rounded-md bg-surface-container-high animate-pulse" />;
+}
+
+function MetricCard({
+  label,
+  value,
+  detail,
+  icon: Icon,
+  variant = "default",
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  icon: typeof DollarSign;
+  variant?: "default" | "trust" | "sovereign";
+}) {
+  return (
+    <Card
+      variant={variant === "trust" ? "trust" : "default"}
+      className={cn(
+        "h-36 p-4 md:p-5 flex flex-col justify-between overflow-hidden",
+        variant === "sovereign" && "bg-surface-container-low hover:bg-surface-container-high",
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs text-on-surface-variant uppercase tracking-widest">{label}</p>
+        <Icon
+          size={17}
+          className={cn(
+            "shrink-0",
+            variant === "trust" ? "text-primary-container" : variant === "sovereign" ? "text-secondary" : "text-on-surface-variant",
+          )}
+        />
+      </div>
+      <div>
+        <p className="font-display text-2xl md:text-3xl font-semibold text-on-surface font-tabular tracking-tight">
+          {value}
+        </p>
+        <p className="mt-1 text-xs text-on-surface-variant">{detail}</p>
+      </div>
+    </Card>
+  );
+}
+
+function distributionTotal(item: DashboardDistributionItem) {
+  return item.total > 0 ? item.total : item.pending + item.executed + item.cancelled + item.expired;
 }
 
 export default function DashboardPage() {
-  const { data: stats, isLoading: statsLoading, isError: statsError } = useStats();
+  const dashboard = useDashboardAnalytics();
   const vaultTvl = useVaultTvl();
-
-  const settled = stats
-    ? stats.total_executions + stats.total_cancelled + stats.total_expired
-    : 0;
-  const limitCount = stats?.by_kind?.LIMIT?.total_registered ?? 0;
-  const marketCount = stats?.by_kind?.MARKET?.total_registered ?? 0;
-  const dcaCount = stats?.by_kind?.DCA?.total_registered ?? 0;
-
-  const metrics = stats
-    ? [
-        { label: "Registered", value: metricValue(stats.total_registered), detail: "All commitments", icon: Database },
-        { label: "Settled", value: metricValue(settled), detail: "Executed / cancelled / expired", icon: Shield },
-        { label: "Success Rate", value: `${stats.success_rate.toFixed(1)}%`, detail: "Executed / settled", icon: TrendingUp },
-        { label: "Avg. Latency", value: `${(stats.avg_latency_ms / 1000).toFixed(1)}s`, detail: "Registration to execution", icon: Clock },
-      ]
-    : [];
+  const analytics = dashboard.data;
+  const distribution = analytics?.intent_distribution ?? [];
+  const distributionSum = distribution.reduce((sum, item) => sum + distributionTotal(item), 0);
+  const recentActivity = analytics?.recent_activity ?? [];
+  const hasOverviewError = dashboard.isError || vaultTvl.isError;
 
   return (
     <>
-      <Topbar title="Command Center" />
-      <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-7xl">
-        {(statsError || vaultTvl.isError) && (
+      <Topbar title="Global Analytics" />
+      <div className="p-4 md:p-6 space-y-5 md:space-y-6 max-w-7xl">
+        {hasOverviewError && (
           <div className="flex items-center gap-2 text-xs text-on-surface-variant p-3 rounded-sm bg-surface-container border border-outline-variant/10">
             <WifiOff size={13} />
-            Some overview data is unavailable
+            Some dashboard data is unavailable. Start the backend and connect to the configured chain for live values.
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Link href="/vault" className="lg:col-span-2 group">
-            <Card className="h-full p-4 md:p-5 transition-colors group-hover:border-primary-container/30">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">
-                    Global Vault TVL
-                  </p>
-                  <p className="font-display text-3xl md:text-4xl font-semibold text-on-surface font-tabular">
-                    {vaultTvl.isLoading ? "..." : formatUSD(vaultTvl.totalUsd)}
-                  </p>
-                  <p className="text-xs text-on-surface-variant mt-2">
-                    Supported collateral held by the vault contract
-                  </p>
-                </div>
-                <div className="w-10 h-10 rounded-sm bg-primary-container/10 text-primary-container flex items-center justify-center shrink-0">
-                  <DollarSign size={18} />
-                </div>
-              </div>
-              <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {vaultTvl.tokenValues.map((token) => (
-                  <div key={token.symbol} className="p-2 rounded-sm bg-surface-container-high">
-                    <p className="text-xs text-on-surface-variant">{token.symbol}</p>
-                    <p className="text-sm text-on-surface font-tabular">
-                      {token.valueUsd > 0 ? formatUSD(token.valueUsd) : "$0.00"}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          </Link>
+        <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
+          {dashboard.isLoading ? (
+            Array.from({ length: 4 }).map((_, i) => <MetricSkeleton key={i} />)
+          ) : (
+            <>
+              <MetricCard
+                label="Global Vault TVL"
+                value={vaultTvl.isLoading ? "..." : vaultTvl.isError ? "Unavailable" : formatUSD(vaultTvl.totalUsd)}
+                detail="Total collateral held by vault"
+                icon={DollarSign}
+                variant="trust"
+              />
+              <MetricCard
+                label="Total Executions"
+                value={formatCount(analytics?.total_executions)}
+                detail="Indexed private intent settlements"
+                icon={Database}
+              />
+              <MetricCard
+                label="Pending Order Fill Commitments"
+                value={formatCount(analytics?.pending_order_fill_commitments)}
+                detail="Limit and market commitments awaiting fill"
+                icon={Shield}
+              />
+              <MetricCard
+                label="Pending DCA Commitments"
+                value={formatCount(analytics?.pending_dca_commitments)}
+                detail="Scheduled DCA rounds awaiting proof"
+                icon={Repeat2}
+                variant="sovereign"
+              />
+            </>
+          )}
+        </section>
 
-          <Card className="p-4 md:p-5">
-            <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-3">
-              Quick Actions
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              <Link href="/orders">
-                <Button variant="primary" size="sm" className="w-full">
-                  <Plus size={14} />
-                  Order
-                </Button>
-              </Link>
-              <Link href="/dca">
-                <Button variant="sovereign" size="sm" className="w-full">
-                  <Repeat2 size={14} />
-                  DCA
-                </Button>
-              </Link>
-              <Link href="/vault">
-                <Button variant="ghost" size="sm" className="w-full">
-                  <Wallet size={14} />
-                  Vault
-                </Button>
-              </Link>
-              <Link href="/activity">
-                <Button variant="ghost" size="sm" className="w-full">
-                  <Activity size={14} />
-                  Activity
-                </Button>
-              </Link>
-            </div>
-          </Card>
-        </div>
-
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {statsLoading
-            ? Array.from({ length: 4 }).map((_, i) => <MetricSkeleton key={i} />)
-            : metrics.map(({ label, value, detail, icon: Icon }) => (
-              <Card key={label} className="p-3 md:p-4">
-                <div className="flex items-center justify-between gap-3 mb-2">
-                  <p className="text-xs text-on-surface-variant uppercase tracking-widest">{label}</p>
-                  <Icon size={14} className="text-on-surface-variant" />
-                </div>
-                <p className="font-display text-xl md:text-2xl font-semibold text-on-surface font-tabular">
-                  {value}
+        <section className="grid grid-cols-1 gap-4">
+          <Card className="p-4 md:p-5 bg-surface-container-low hover:bg-surface-container-low">
+            <div className="flex items-start justify-between gap-4 mb-6">
+              <div>
+                <p className="text-xs text-on-surface-variant uppercase tracking-widest">Intent Distribution</p>
+                <p className="mt-1 text-sm text-on-surface-variant">
+                  Indexed intent classes with pending backend commitments included.
                 </p>
-                <p className="text-xs text-on-surface-variant mt-1">{detail}</p>
-              </Card>
-            ))}
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Card className="lg:col-span-2">
-            <CardHeader>
-              <CardTitle>Intent Mix</CardTitle>
-              <CardDescription>Public commitment classes indexed by the backend</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { label: "Limit", value: limitCount },
-                  { label: "Market", value: marketCount },
-                  { label: "DCA", value: dcaCount },
-                ].map((item) => (
-                  <div key={item.label} className="p-3 rounded-sm bg-surface-container-high">
-                    <p className="text-xs text-on-surface-variant">{item.label}</p>
-                    <p className="text-lg font-semibold font-tabular text-on-surface">{item.value}</p>
-                  </div>
-                ))}
               </div>
-            </CardContent>
-          </Card>
+              <Badge variant="primary" dot>Live</Badge>
+            </div>
 
-          <Link href="/activity" className="group">
-            <Card className="h-full p-4 transition-colors group-hover:border-primary-container/30">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-on-surface">Open Activity</p>
-                  <p className="text-xs text-on-surface-variant mt-1">
-                    Search anonymized commitments and transactions
-                  </p>
+            {dashboard.isLoading ? (
+              <div className="h-56 rounded-sm bg-surface-container-high animate-pulse" />
+            ) : distributionSum === 0 ? (
+              <div className="h-56 flex flex-col items-center justify-center gap-2 text-on-surface-variant">
+                <BarChart3 size={18} />
+                <p className="text-xs">No intent distribution data yet</p>
+              </div>
+            ) : (
+              <>
+                <div className="h-56 flex items-end gap-3 md:gap-5">
+                  {distribution.map((item) => {
+                    const total = distributionTotal(item);
+                    const pct = distributionSum > 0 ? Math.round((total / distributionSum) * 100) : 0;
+                    return (
+                      <div key={item.kind} className="flex-1 min-w-0 flex flex-col items-center gap-2">
+                        <div className="w-full h-44 flex items-end">
+                          <div
+                            className={cn(
+                              "w-full rounded-t-sm bg-surface-container-highest hover:bg-surface-bright transition-colors",
+                              item.kind === "DCA" && "bg-secondary-container/35 hover:bg-secondary-container/50",
+                              item.kind === "MARKET" && "bg-primary-container/25 hover:bg-primary-container/35",
+                            )}
+                            style={{ height: `${Math.max(pct, 8)}%` }}
+                            title={`${kindLabel(item.kind)}: ${total}`}
+                          />
+                        </div>
+                        <div className="text-center">
+                          <p className="text-xs text-on-surface uppercase tracking-widest truncate">{kindLabel(item.kind)}</p>
+                          <p className="text-xs text-on-surface-variant font-tabular">{pct}% / {formatCount(total)}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <ArrowRight size={16} className="text-on-surface-variant group-hover:text-primary-container" />
-              </div>
-            </Card>
-          </Link>
-        </div>
+                <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {distribution.map((item) => (
+                    <div key={item.kind} className="rounded-sm bg-surface p-3">
+                      <p className="text-xs text-on-surface-variant uppercase tracking-widest">{kindLabel(item.kind)}</p>
+                      <div className="mt-2 flex items-center justify-between gap-2 text-xs">
+                        <span className="text-on-surface-variant">Executed</span>
+                        <span className="font-tabular text-on-surface">{formatCount(item.executed)}</span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between gap-2 text-xs">
+                        <span className="text-on-surface-variant">Pending</span>
+                        <span className="font-tabular text-secondary">{formatCount(item.pending)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </Card>
+        </section>
+
+        <section className="rounded-md bg-surface-container-low p-4 md:p-5">
+          <div className="flex items-start sm:items-center justify-between gap-3 mb-4">
+            <div className="flex items-center gap-2">
+              <Activity size={15} className="text-on-surface-variant" />
+              <p className="text-xs text-on-surface-variant uppercase tracking-widest">
+                Recent Executions
+              </p>
+            </div>
+            <Link href="/activity" className="text-xs text-primary-container hover:text-primary uppercase tracking-widest font-semibold whitespace-nowrap">
+              View full activity
+            </Link>
+          </div>
+
+          {dashboard.isLoading ? (
+            <div className="flex items-center justify-center py-14 text-on-surface-variant gap-2">
+              <Loader2 size={16} className="animate-spin" />
+              Loading activity...
+            </div>
+          ) : recentActivity.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-14 text-on-surface-variant gap-2">
+              <Activity size={16} />
+              <p className="text-xs">No recent activity found</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[680px]">
+                <thead>
+                  <tr className="border-b border-outline-variant/10">
+                    {["Commitment", "Type", "Status", "Tx", "Time"].map((h) => (
+                      <th key={h} className="text-left px-3 py-2 text-xs text-on-surface-variant uppercase tracking-widest font-medium">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentActivity.map((item) => (
+                    <tr key={item.id} className="border-b border-outline-variant/5 hover:bg-surface-container transition-colors">
+                      <td className="px-3 py-3 font-tabular text-on-surface-variant whitespace-nowrap">
+                        {item.commitment_ref}
+                      </td>
+                      <td className="px-3 py-3 text-on-surface whitespace-nowrap">
+                        {kindLabel(item.kind)}
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <StatusChip status={item.status} />
+                      </td>
+                      <td className="px-3 py-3 font-tabular text-on-surface-variant whitespace-nowrap">
+                        {item.tx_ref || "-"}
+                      </td>
+                      <td className="px-3 py-3 text-on-surface-variant whitespace-nowrap">
+                        {formatDistanceToNow(item.occurred_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       </div>
     </>
   );
