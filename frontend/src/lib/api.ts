@@ -35,6 +35,35 @@ export interface ExecutionRecord {
   executed_at:     string | null;
 }
 
+export interface DashboardDistributionItem {
+  kind:      IntentKind;
+  total:     number;
+  executed:  number;
+  pending:   number;
+  cancelled: number;
+  expired:   number;
+}
+
+export interface DashboardActivityItem {
+  id:             number;
+  commitment_ref: string;
+  tx_ref?:        string;
+  chain_id:       number;
+  kind:           IntentKind;
+  status:         ExecutionStatus;
+  occurred_at:    string;
+}
+
+export interface DashboardAnalytics {
+  chain_id:                          number;
+  total_vault_value_usd:             number | null;
+  total_executions:                  number;
+  pending_order_fill_commitments:    number;
+  pending_dca_commitments:           number;
+  intent_distribution:               DashboardDistributionItem[];
+  recent_activity:                   DashboardActivityItem[];
+}
+
 export interface ExecutionTicket {
   version:         number;
   chainId:         number;
@@ -98,6 +127,10 @@ async function apiErrorMessage(res: Response, path: string): Promise<string> {
 }
 
 export const api = {
+  dashboard: async (chainId = DEFAULT_CHAIN_ID): Promise<DashboardAnalytics> => {
+    const json = await fetchJson(`/api/v1/dashboard?chain_id=${chainId}`);
+    return (json as { data: DashboardAnalytics }).data;
+  },
   stats: async (chainId = DEFAULT_CHAIN_ID): Promise<Statistics> => {
     const json = await fetchJson(`/api/v1/stats?chain_id=${chainId}`);
     return (json as { data: Statistics }).data;
