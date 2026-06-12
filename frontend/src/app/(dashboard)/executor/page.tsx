@@ -19,7 +19,7 @@ import {
 import { useAccount, useChainId, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/Button";
-import { useExecutorTickets } from "@/hooks/useBackendApi";
+import { useExecutorTickets } from "@/hooks/api/useExecutorApi";
 import { useTxToast } from "@/hooks/useTxToast";
 import { api, type ExecutorTicketEnvelope } from "@/lib/api";
 import { COMMITMENT_REGISTRY_ABI } from "@/lib/contracts";
