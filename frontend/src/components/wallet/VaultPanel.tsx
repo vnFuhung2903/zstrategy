@@ -6,7 +6,7 @@ import { formatUnits } from "viem";
 import { ArrowDownToLine, ArrowUpFromLine, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Card, CardContent } from "@/components/ui/Card";
 import { useFreeBalance, useTokenBalance, useTokenAllowance, useApproveToken, useDeposit, useWithdraw } from "@/hooks/useVault";
 import { TOKENS } from "@/lib/contracts";
 import { cn } from "@/lib/utils";
@@ -98,9 +98,6 @@ export function VaultPanel() {
 
   return (
     <Card className="p-4 space-y-4">
-      <CardHeader className="p-0">
-        <CardTitle className="text-sm">Manage Collateral</CardTitle>
-      </CardHeader>
       <CardContent className="p-0 space-y-4">
         {/* Token selector */}
         <div className="flex gap-2">
@@ -127,7 +124,7 @@ export function VaultPanel() {
             <p className="font-tabular text-on-surface">{fmt(walletBalance)} {token.label}</p>
           </div>
           <div className="p-2 rounded-sm bg-surface-container-high">
-            <p className="text-on-surface-variant mb-0.5">Vault (free)</p>
+            <p className="text-on-surface-variant mb-0.5">Free collateral</p>
             <p className="font-tabular text-primary-container">{fmt(vaultBalance)} {token.label}</p>
           </div>
         </div>

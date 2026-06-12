@@ -1,7 +1,6 @@
 "use client";
 
 import { Topbar } from "@/components/layout/Topbar";
-import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { Lock } from "lucide-react";
 import { VaultPanel } from "@/components/wallet/VaultPanel";
@@ -9,7 +8,7 @@ import { VaultPanel } from "@/components/wallet/VaultPanel";
 export default function VaultPage() {
   return (
     <>
-      <Topbar title="Vault Security" />
+      <Topbar title="Collateral Vault" />
       <div className="p-4 md:p-6 space-y-4 max-w-7xl">
 
         {/* Hero */}
@@ -19,15 +18,11 @@ export default function VaultPage() {
             <div className="flex-1 min-w-0">
               <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Secure Collateral Layer</p>
               <h2 className="font-display text-2xl md:text-3xl font-semibold text-primary-container tracking-tight">
-                Vault Security
+                Collateral Vault
               </h2>
-              <p className="text-sm text-on-surface-variant mt-2 max-w-md">
-                All collateral is locked in non-custodial smart contracts. Only ZK proofs can authorize fund movement.
+              <p className="text-sm text-on-surface-variant mt-2">
+                All collateral is locked in non-custodial smart contracts. Only proofs can authorize fund movement.
               </p>
-              <div className="flex flex-wrap items-center gap-2 mt-4">
-                <Badge variant="primary" dot>System Optimal</Badge>
-                <Badge variant="sovereign" dot>ZKP Active</Badge>
-              </div>
             </div>
             {/* Animated lock */}
             <div className="relative w-20 h-20 md:w-28 md:h-28 hidden sm:flex items-center justify-center shrink-0">
@@ -38,11 +33,8 @@ export default function VaultPage() {
             </div>
           </div>
         </Card>
-
-        {/* Deposit / Withdraw panels */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="w-full max-w-3xl mx-auto">
           <VaultPanel />
-          <div className="hidden md:block" />
         </div>
       </div>
     </>
