@@ -170,6 +170,20 @@ func (r *IntentRepo) CountByStatus(ctx context.Context, status domain.IntentStat
 	return n, nil
 }
 
+func (r *IntentRepo) CountByKindsAndStatuses(ctx context.Context, chainID int64, kinds []domain.IntentKind, statuses []domain.IntentStatus) (int64, error) {
+	if len(kinds) == 0 || len(statuses) == 0 {
+		return 0, nil
+	}
+	var n int64
+	if err := r.db.WithContext(ctx).
+		Model(&domain.PendingIntent{}).
+		Where("chain_id = ? AND kind IN ? AND status IN ?", chainID, kinds, statuses).
+		Count(&n).Error; err != nil {
+		return 0, fmt.Errorf("count by kinds and statuses: %w", err)
+	}
+	return n, nil
+}
+
 func (r *IntentRepo) ResetStuckExecuting(ctx context.Context, olderThan time.Duration) ([]*domain.PendingIntent, error) {
 	cutoff := time.Now().Add(-olderThan)
 

@@ -20,6 +20,9 @@ type IntentRepository interface {
 	ListTicketReady(ctx context.Context) ([]*PendingIntent, error)
 	// CountByStatus returns the number of rows in the given status.
 	CountByStatus(ctx context.Context, status IntentStatus) (int64, error)
+	// CountByKindsAndStatuses returns rows for a chain matching any of the
+	// supplied kinds and statuses.
+	CountByKindsAndStatuses(ctx context.Context, chainID int64, kinds []IntentKind, statuses []IntentStatus) (int64, error)
 	// ResetStuckExecuting flips in-flight rows whose updated_at is older than
 	// `olderThan` back to PENDING and returns them so the monitor can resume them.
 	// Pass `0` to reset all in-flight rows regardless of age (use at startup).
