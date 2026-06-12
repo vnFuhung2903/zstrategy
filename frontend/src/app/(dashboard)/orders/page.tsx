@@ -3,13 +3,12 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useAccount, useSignMessage, useChainId, usePublicClient } from "wagmi";
 import { parseUnits, formatUnits } from "viem";
-import { toast } from "sonner";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
-import { Lock, Info, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Lock, Info, Loader2, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useFreeBalance, formatUnits as fmtUnits } from "@/hooks/useVault";
 import { DEFAULT_PAIR, type TradingPair } from "@/lib/tradingPairs";
@@ -97,14 +96,11 @@ export default function OrdersPage() {
   const [postSynced,  setPostSynced]  = useState(false);
   const [backendSyncRetry, setBackendSyncRetry] = useState(0);
   const [backendSyncError, setBackendSyncError] = useState<string | null>(null);
-  const [marketIntentHash, setMarketIntentHash] = useState<`0x${string}` | null>(null);
-  const [marketIntentPhase, setMarketIntentPhase] = useState<"registering" | "syncing" | "queued" | "error" | null>(null);
 
   // Per-intent nonce — generated once per page load. A fresh intent gets a
   // fresh nonce; we persist it with metadata only when the user clicks
   // submit, so abandoned drafts don't pollute IndexedDB.
   const nonceRef = useRef<`0x${string}` | null>(null);
-  const marketIntentToastRef = useRef<string | null>(null);
   const backendSyncHashRef = useRef<string | null>(null);
 
   // Direction is just the user's side choice for both LIMIT and MARKET.
@@ -354,16 +350,12 @@ export default function OrdersPage() {
       // Backend stores user-facing intent kind. On-chain LIMIT and MARKET
       // both use kind=0 (ORDER_FILL); MARKET uses a
       // sentinel price that makes the fill check pass.
-      const isMarketOrder = kind === "MARKET";
       setPostSynced(false);
       setBackendSyncRetry(0);
-      setMarketIntentHash(isMarketOrder ? commitmentHash : null);
-      setMarketIntentPhase(isMarketOrder ? "registering" : null);
-      marketIntentToastRef.current = null;
       backendSyncHashRef.current = null;
       setPendingPost({
         commitmentHash,
-        kind:       isMarketOrder ? "MARKET" : "LIMIT",
+        kind,
         chainId,
         tokenIn:    tokenIn.address,
         tokenOut:   tokenOut.address,
@@ -375,9 +367,7 @@ export default function OrdersPage() {
 
       // 4. On-chain registration. msg.sender = wallet, so cancel and local
       //    recovery paths stay wallet-controlled.
-      register(commitmentHash, tokenIn.address, tokenOut.address, amountBig, minOutBig, expiry, 0, {
-        successToastEnabled: !isMarketOrder,
-      });
+      register(commitmentHash, tokenIn.address, tokenOut.address, amountBig, minOutBig, expiry);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setSubmitError(msg);
@@ -394,7 +384,6 @@ export default function OrdersPage() {
     if (!pendingPost || postSynced) return;
     setSubmitError(null);
     setBackendSyncError(null);
-    if (pendingPost.kind === "MARKET") setMarketIntentPhase("syncing");
     setBackendSyncRetry(n => n + 1);
   }
 
@@ -408,27 +397,11 @@ export default function OrdersPage() {
     backendSyncHashRef.current = pendingPost.commitmentHash;
 
     let cancelled = false;
-    if (pendingPost.kind === "MARKET") {
-      queueMicrotask(() => {
-        if (!cancelled) setMarketIntentPhase("syncing");
-      });
-    }
-
     backendApi.postOrderIntent(pendingPost)
       .then(() => {
         if (!cancelled) {
           setPostSynced(true);
           setBackendSyncError(null);
-          if (pendingPost.kind === "MARKET") {
-            setMarketIntentPhase("queued");
-            if (marketIntentToastRef.current !== pendingPost.commitmentHash) {
-              marketIntentToastRef.current = pendingPost.commitmentHash;
-              toast.success("Market intent queued", {
-                description: "Execution is async. Watch Activity for the on-chain fill.",
-                duration: 8000,
-              });
-            }
-          }
         }
       })
       .catch(err => {
@@ -437,22 +410,13 @@ export default function OrdersPage() {
           backendSyncHashRef.current = null;
           setBackendSyncError(msg);
           setSubmitError(msg);
-          if (pendingPost.kind === "MARKET") setMarketIntentPhase("error");
           console.warn("[intent] backend post failed (will need retry):", err);
         }
       });
     return () => { cancelled = true; };
   }, [isSuccess, pendingPost, postSynced, backendSyncRetry]);
 
-  const effectiveMarketIntentPhase =
-    marketIntentPhase === "registering" && isSuccess ? "syncing" : marketIntentPhase;
-  const waitingForMarketSync = Boolean(
-    marketIntentHash
-      && effectiveMarketIntentPhase !== "queued"
-      && effectiveMarketIntentPhase !== "error"
-      && (isSuccess || effectiveMarketIntentPhase === "syncing"),
-  );
-  const busy = isPending || isConfirming || isSigning || waitingForMarketSync;
+  const busy = isPending || isConfirming || isSigning;
   const errorMessage = submitError ?? (error ? (error as Error).message : null);
 
   return (
@@ -462,7 +426,7 @@ export default function OrdersPage() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 max-w-7xl">
 
           {/* Left — Order config */}
-          <div className="lg:col-span-4">
+          <div className="lg:col-span-5">
             <Card className="p-4 md:p-5 space-y-4 md:space-y-5">
               <p className="text-xs font-medium text-primary-container uppercase tracking-widest">
                 Order Parameters
@@ -471,16 +435,18 @@ export default function OrdersPage() {
               {/* Order type */}
               <div>
                 <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Order Type</p>
-                <div className="flex gap-1.5">
+                <div className="inline-flex w-fit rounded-lg border border-outline-variant/20 bg-surface-container-lowest p-0.5">
                   {(["LIMIT", "MARKET"] as const).map(k => (
                     <button
+                      type="button"
                       key={k}
+                      aria-pressed={kind === k}
                       onClick={() => setKind(k)}
                       className={cn(
-                        "flex-1 py-1.5 text-xs font-medium rounded-sm border transition-all",
+                        "h-8 flex-1 px-5 text-xs font-medium rounded-lg transition-colors",
                         kind === k
-                          ? "border-primary-container text-primary-container bg-primary-container/10"
-                          : "border-outline-variant/20 text-on-surface-variant hover:border-outline-variant/50",
+                          ? "bg-primary-container/15 text-primary-container"
+                          : "text-on-surface-variant hover:text-on-surface",
                       )}
                     >
                       {k === "LIMIT" ? "Limit" : "Market"}
@@ -491,7 +457,7 @@ export default function OrdersPage() {
 
               {/* Side */}
               <div>
-                <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Side</p>
+                <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Direction</p>
                 <div className="flex gap-1.5">
                   {(["BUY", "SELL"] as const).map(s => (
                     <button
@@ -649,17 +615,13 @@ export default function OrdersPage() {
           </div>
 
           {/* Right — ZK panel */}
-          <div className="lg:col-span-8 space-y-4">
+          <div className="lg:col-span-7 space-y-4">
             <Card variant="trust-violet" className="p-4 md:p-5">
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-4">
                 <div>
-                  <p className="text-xs text-secondary uppercase tracking-widest mb-1">Cryptographic Commitment</p>
-                  <h2 className="font-display text-xl md:text-2xl font-semibold text-on-surface">ZK Proof Enclave</h2>
-                  <p className="text-sm text-on-surface-variant mt-1">
-                    Your order parameters are encrypted locally. Public executors only see execution tickets.
-                  </p>
+                  <p className="text-xs text-secondary uppercase tracking-widest mb-1">Private Order</p>
                 </div>
-                <Badge variant="sovereign" dot className="shrink-0">ZKP Active</Badge>
+                <Badge variant="sovereign" dot className="shrink-0">Order Circuit</Badge>
               </div>
 
               {/* Status */}
@@ -685,31 +647,7 @@ export default function OrdersPage() {
                 </div>
               )}
 
-              {/* Action — button stays in its ready state across submissions.
-                  Success is announced via the global toast (Sonner) from the
-                  useRegisterCommitment hook's useTxToast wiring, so we don't
-                  also need to swap icons/text here. */}
-              {marketIntentHash && (
-                <div className="mt-3 flex items-center gap-2 text-xs text-primary-container">
-                  {effectiveMarketIntentPhase === "queued"
-                    ? <CheckCircle2 size={13} />
-                    : effectiveMarketIntentPhase === "error"
-                      ? <AlertCircle size={13} />
-                      : <Loader2 size={13} className="animate-spin" />
-                  }
-                  {effectiveMarketIntentPhase === "queued"
-                    ? "Market intent queued. Execution continues asynchronously."
-                    : effectiveMarketIntentPhase === "error"
-                      ? "Market intent sync failed. See error above."
-                      : effectiveMarketIntentPhase === "syncing"
-                      ? "Registration confirmed. Syncing encrypted witness package..."
-                      : isSuccess
-                        ? "Registration confirmed. Syncing intent payload..."
-                        : "Registering market intent commitment..."
-                  }
-                </div>
-              )}
-
+              {/* Action — registration success is announced by useRegisterCommitment. */}
               <div className="mt-4 md:mt-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 bg-secondary/10">
@@ -736,7 +674,7 @@ export default function OrdersPage() {
                   onClick={handleSubmit}
                 >
                   {busy
-                    ? <><Loader2 size={14} className="animate-spin" />{waitingForMarketSync ? "Syncing..." : isSigning ? "Signing…" : isConfirming ? "Confirming…" : "Submitting…"}</>
+                    ? <><Loader2 size={14} className="animate-spin" />{isSigning ? "Signing…" : isConfirming ? "Confirming…" : "Submitting…"}</>
                     : <><Lock size={14} />Sign &amp; Submit Commitment</>
                   }
                 </Button>
@@ -747,9 +685,7 @@ export default function OrdersPage() {
             <div className="flex gap-3 px-4 py-3 rounded-sm border-l-2 border-primary-container bg-primary-container/5">
               <Info size={14} className="text-primary-container mt-0.5 shrink-0" />
               <p className="text-xs text-on-surface-variant leading-relaxed">
-                Your wallet signs a per-order id to derive the secret. The signature stays in your browser;
-                only the commitment hash is posted on-chain. Cancel and self-execute work after a page reload
-                because the secret is recoverable from the wallet — no key management required.
+                Your wallet must sign per order to derive the secret. Executors only see execution tickets, your order sensitive parameters are never posted on-chain.
               </p>
             </div>
           </div>

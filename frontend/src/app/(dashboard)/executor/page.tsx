@@ -4,17 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  AlertTriangle,
-  BadgeCheck,
-  Clock3,
   Loader2,
-  RadioTower,
   RefreshCw,
-  Rocket,
-  ShieldCheck,
-  Terminal,
-  WifiOff,
-  Zap,
 } from "lucide-react";
 import { useAccount, useChainId, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { Topbar } from "@/components/layout/Topbar";
@@ -160,15 +151,12 @@ function TicketRow({
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-on-surface-variant">
         <span className="flex items-center gap-1">
-          <RadioTower size={13} />
           Chain {ticket.chainId}
         </span>
         <span className="flex items-center gap-1">
-          <Clock3 size={13} />
           Expires in {formatExpires(ticket.ticketExpiresAt, now)}
         </span>
         <span className="flex items-center gap-1">
-          <ShieldCheck size={13} />
           {ticket.intentKind}
         </span>
       </div>
@@ -282,21 +270,11 @@ export default function ExecutorPage() {
               Claim execution tickets and submit their ZK proof bundles without receiving private witness data.
             </p>
           </div>
-          <div className="flex items-center gap-3 bg-surface-container-highest px-4 py-2 rounded-sm border border-outline-variant/20">
-            <span className={cn(
-              "w-2 h-2 rounded-full",
-              ticketsQuery.isError ? "bg-error" : "bg-primary-container animate-pulse shadow-[0_0_8px_rgba(0,240,255,0.8)]",
-            )} />
-            <span className="text-xs uppercase tracking-widest font-bold text-primary-container font-tabular">
-              {ticketsQuery.isError ? "Backend Unavailable" : "Ticket Relay Online"}
-            </span>
-          </div>
         </section>
 
         {ticketsQuery.isError && (
           <div className="flex items-center gap-2 text-xs text-error p-3 rounded-sm bg-error-container/20 border border-error/20">
-            <WifiOff size={14} />
-            Backend ticket endpoint is unavailable.
+            Service unavailable.
           </div>
         )}
 
@@ -304,10 +282,7 @@ export default function ExecutorPage() {
           <div className="xl:col-span-7 flex flex-col bg-surface-container-low rounded-sm border border-outline-variant/10 min-h-[560px]">
             <div className="p-5 border-b border-outline-variant/10 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
               <div>
-                <h2 className="font-display text-lg font-bold text-on-surface">Backend-Ready Ticket Queue</h2>
-                <p className="text-xs text-on-surface-variant mt-1">
-                  Registry checks still run at submission time.
-                </p>
+                <h2 className="font-display text-lg font-bold text-on-surface">Claimable Ticket Queue</h2>
               </div>
               <Button
                 variant="ghost"
@@ -329,11 +304,7 @@ export default function ExecutorPage() {
 
               {!ticketsQuery.isLoading && tickets.length === 0 && (
                 <div className="h-full min-h-[320px] flex flex-col items-center justify-center text-center text-on-surface-variant">
-                  <Terminal size={28} className="mb-3 opacity-70" />
                   <p className="text-sm font-medium text-on-surface">No tickets</p>
-                  <p className="text-xs mt-1 max-w-sm">
-                    The prover scheduler has not published an executable ticket for this chain.
-                  </p>
                 </div>
               )}
 
@@ -354,7 +325,6 @@ export default function ExecutorPage() {
               <div className="bg-surface-container-low/80 p-5 border-b border-outline-variant/20 flex justify-between items-center backdrop-blur-md">
                 <div>
                   <div className="flex items-center gap-2 mb-1">
-                    <Zap size={17} className="text-primary-container" />
                     <h2 className="font-display text-sm uppercase tracking-[0.2em] font-black text-on-surface">
                       Execution Console
                     </h2>
@@ -382,16 +352,9 @@ export default function ExecutorPage() {
                     disabled={!isConnected || actionBusy || !hasFreshTickets}
                     onClick={() => claimAndExecute.mutate()}
                   >
-                    {actionBusy ? <Loader2 size={18} className="animate-spin" /> : <Rocket size={18} />}
+                    {actionBusy ?? <Loader2 size={18} className="animate-spin" />}
                     {selectedReadyTicket ? "Claim Selected Ticket" : "Claim Next Ticket"}
                   </Button>
-                </div>
-
-                <div className="rounded-sm bg-tertiary-container/10 border border-tertiary-container/20 p-3 flex items-start gap-2">
-                  <AlertTriangle size={15} className="text-tertiary-container mt-0.5 shrink-0" />
-                  <p className="text-xs text-on-surface-variant">
-                    Claimable tickets can still revert if chain state, oracle price, expiry, or nullifier state changes before settlement.
-                  </p>
                 </div>
 
                 <div className="mt-auto">
@@ -411,15 +374,6 @@ export default function ExecutorPage() {
                     ) : (
                       <p className="text-xs text-on-surface-variant">No ticket selected.</p>
                     )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-3 border-t border-outline-variant/10 bg-surface-container-low/30">
-                <div className="flex justify-between items-center gap-3">
-                  <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-[0.2em] text-primary-container/60 font-black">
-                    <BadgeCheck size={12} />
-                    Public executor wallet required
                   </div>
                 </div>
               </div>

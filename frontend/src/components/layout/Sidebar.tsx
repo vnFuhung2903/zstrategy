@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
-  TrendingUp,
   Shield,
   Repeat2,
   Activity,
@@ -13,14 +12,15 @@ import {
   Zap,
   X,
   Menu,
+  DollarSign,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 
 const nav = [
-  { href: "/dashboard", label: "Command Center", icon: LayoutDashboard },
-  { href: "/orders",    label: "Order Builder",    icon: TrendingUp },
-  { href: "/vault",     label: "Vault",            icon: Shield },
+  { href: "/dashboard", label: "Command Center",   icon: LayoutDashboard },
+  { href: "/orders",    label: "Order Builder",    icon: Shield },
+  { href: "/vault",     label: "Vault",            icon: DollarSign },
   { href: "/dca",       label: "DCA Pulse",        icon: Repeat2 },
   { href: "/executor",  label: "Executor",         icon: Terminal },
   { href: "/activity",  label: "Activity",         icon: Activity },

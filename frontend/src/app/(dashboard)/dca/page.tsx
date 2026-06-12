@@ -281,7 +281,7 @@ export default function DcaPage() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 max-w-7xl">
 
           {/* Left — config */}
-          <div className="lg:col-span-4">
+          <div className="lg:col-span-5">
             <Card className="p-4 md:p-5 space-y-4 md:space-y-5">
               <p className="text-xs font-medium text-primary-container uppercase tracking-widest">DCA Parameters</p>
 
@@ -387,15 +387,11 @@ export default function DcaPage() {
           </div>
 
           {/* Right — ZK panel */}
-          <div className="lg:col-span-8 space-y-4">
+          <div className="lg:col-span-7 space-y-4">
             <Card variant="trust-violet" className="p-4 md:p-5">
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-4">
                 <div>
                   <p className="text-xs text-secondary uppercase tracking-widest mb-1">Private DCA</p>
-                  <h2 className="font-display text-xl md:text-2xl font-semibold text-on-surface">ZK Proof Enclave</h2>
-                  <p className="text-sm text-on-surface-variant mt-1">
-                    Execution windows are private. Observers see only that a DCA round executed, not when it was scheduled.
-                  </p>
                 </div>
                 <Badge variant="sovereign" dot className="shrink-0">DCA Circuit</Badge>
               </div>
@@ -449,8 +445,7 @@ export default function DcaPage() {
             <div className="flex gap-3 px-4 py-3 rounded-sm border-l-2 border-primary-container bg-primary-container/5">
               <Info size={14} className="text-primary-container mt-0.5 shrink-0" />
               <p className="text-xs text-on-surface-variant leading-relaxed">
-                One wallet signature covers all rounds. Each round gets a unique nonce and private execution window.
-                Public executors only see execution tickets — your DCA schedule is never revealed on-chain.
+                Only 1 wallet signature covers all rounds. Executors only see execution tickets, your DCA schedule is never revealed on-chain.
               </p>
             </div>
           </div>
