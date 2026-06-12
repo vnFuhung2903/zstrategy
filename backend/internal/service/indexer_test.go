@@ -108,6 +108,9 @@ func (r fakeIntentRepo) ListTicketReady(context.Context) ([]*domain.PendingInten
 func (r fakeIntentRepo) CountByStatus(context.Context, domain.IntentStatus) (int64, error) {
 	return 0, nil
 }
+func (r fakeIntentRepo) CountByKindsAndStatuses(context.Context, int64, []domain.IntentKind, []domain.IntentStatus) (int64, error) {
+	return 0, nil
+}
 func (r fakeIntentRepo) ResetStuckExecuting(context.Context, time.Duration) ([]*domain.PendingIntent, error) {
 	return nil, nil
 }

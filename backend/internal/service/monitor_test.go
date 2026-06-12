@@ -136,6 +136,24 @@ func (r *monitorIntentRepo) CountByStatus(context.Context, domain.IntentStatus) 
 	return 0, nil
 }
 
+func (r *monitorIntentRepo) CountByKindsAndStatuses(_ context.Context, chainID int64, kinds []domain.IntentKind, statuses []domain.IntentStatus) (int64, error) {
+	kindSet := make(map[domain.IntentKind]bool, len(kinds))
+	for _, kind := range kinds {
+		kindSet[kind] = true
+	}
+	statusSet := make(map[domain.IntentStatus]bool, len(statuses))
+	for _, status := range statuses {
+		statusSet[status] = true
+	}
+	var n int64
+	for _, intent := range r.intents {
+		if intent.ChainID == chainID && kindSet[intent.Kind] && statusSet[intent.Status] {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (r *monitorIntentRepo) ResetStuckExecuting(context.Context, time.Duration) ([]*domain.PendingIntent, error) {
 	var reset []*domain.PendingIntent
 	for _, intent := range r.intents {

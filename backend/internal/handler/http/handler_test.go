@@ -111,6 +111,29 @@ func (r *handlerIntentRepo) CountByStatus(context.Context, domain.IntentStatus) 
 	return 0, nil
 }
 
+func (r *handlerIntentRepo) CountByKindsAndStatuses(_ context.Context, chainID int64, kinds []domain.IntentKind, statuses []domain.IntentStatus) (int64, error) {
+	kindSet := make(map[domain.IntentKind]bool, len(kinds))
+	for _, kind := range kinds {
+		kindSet[kind] = true
+	}
+	statusSet := make(map[domain.IntentStatus]bool, len(statuses))
+	for _, status := range statuses {
+		statusSet[status] = true
+	}
+	var n int64
+	for _, intent := range append(r.saved, r.batchSaved...) {
+		if intent.ChainID == chainID && kindSet[intent.Kind] && statusSet[intent.Status] {
+			n++
+		}
+	}
+	for _, intent := range r.ticketReady {
+		if intent.ChainID == chainID && kindSet[intent.Kind] && statusSet[intent.Status] {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (r *handlerIntentRepo) ResetStuckExecuting(context.Context, time.Duration) ([]*domain.PendingIntent, error) {
 	return nil, nil
 }

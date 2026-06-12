@@ -57,6 +57,91 @@ func (h *Handler) Health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+type dashboardAnalyticsResponse struct {
+	ChainID                     int64                       `json:"chain_id"`
+	TotalVaultValueUSD          *float64                    `json:"total_vault_value_usd"`
+	TotalExecutions             int64                       `json:"total_executions"`
+	PendingOrderFillCommitments int64                       `json:"pending_order_fill_commitments"`
+	PendingDCACommitments       int64                       `json:"pending_dca_commitments"`
+	IntentDistribution          []dashboardDistributionItem `json:"intent_distribution"`
+	RecentActivity              []dashboardActivityItem     `json:"recent_activity"`
+}
+
+type dashboardDistributionItem struct {
+	Kind      domain.IntentKind `json:"kind"`
+	Total     int64             `json:"total"`
+	Executed  int64             `json:"executed"`
+	Pending   int64             `json:"pending"`
+	Cancelled int64             `json:"cancelled"`
+	Expired   int64             `json:"expired"`
+}
+
+type dashboardActivityItem struct {
+	ID            uint                   `json:"id"`
+	CommitmentRef string                 `json:"commitment_ref"`
+	TxRef         string                 `json:"tx_ref,omitempty"`
+	ChainID       int64                  `json:"chain_id"`
+	Kind          domain.IntentKind      `json:"kind"`
+	Status        domain.ExecutionStatus `json:"status"`
+	OccurredAt    time.Time              `json:"occurred_at"`
+}
+
+func (h *Handler) GetDashboard(c *gin.Context) {
+	chainID := parseChainID(c)
+	stats, err := h.stats.GetStatistics(c.Request.Context(), chainID)
+	if err != nil {
+		errResponse(c, err)
+		return
+	}
+
+	activeStatuses := []domain.IntentStatus{
+		domain.IntentPending,
+		domain.IntentEvaluating,
+		domain.IntentTicketReady,
+	}
+	pendingOrderFill, err := h.intentRepo.CountByKindsAndStatuses(c.Request.Context(), chainID, []domain.IntentKind{
+		domain.KindLimit,
+		domain.KindMarket,
+	}, activeStatuses)
+	if err != nil {
+		errResponse(c, err)
+		return
+	}
+	pendingDCA, err := h.intentRepo.CountByKindsAndStatuses(c.Request.Context(), chainID, []domain.IntentKind{
+		domain.KindDCA,
+	}, activeStatuses)
+	if err != nil {
+		errResponse(c, err)
+		return
+	}
+
+	pendingByKind := make(map[domain.IntentKind]int64)
+	for _, kind := range []domain.IntentKind{domain.KindLimit, domain.KindMarket, domain.KindDCA} {
+		n, err := h.intentRepo.CountByKindsAndStatuses(c.Request.Context(), chainID, []domain.IntentKind{kind}, activeStatuses)
+		if err != nil {
+			errResponse(c, err)
+			return
+		}
+		pendingByKind[kind] = n
+	}
+
+	records, err := h.stats.GetExecutions(c.Request.Context(), chainID, domain.ExecutionFilters{}, 6, 0)
+	if err != nil {
+		errResponse(c, err)
+		return
+	}
+
+	ok(c, dashboardAnalyticsResponse{
+		ChainID:                     chainID,
+		TotalVaultValueUSD:          nil,
+		TotalExecutions:             stats.TotalExecutions,
+		PendingOrderFillCommitments: pendingOrderFill,
+		PendingDCACommitments:       pendingDCA,
+		IntentDistribution:          dashboardDistribution(stats, pendingByKind),
+		RecentActivity:              dashboardActivity(records),
+	})
+}
+
 func (h *Handler) GetStats(c *gin.Context) {
 	chainID := parseChainID(c)
 	stats, err := h.stats.GetStatistics(c.Request.Context(), chainID)
@@ -92,6 +177,63 @@ func (h *Handler) ListExecutions(c *gin.Context) {
 		"limit":  limit,
 		"offset": offset,
 	})
+}
+
+func dashboardDistribution(stats *domain.Statistics, pendingByKind map[domain.IntentKind]int64) []dashboardDistributionItem {
+	kinds := []domain.IntentKind{domain.KindLimit, domain.KindMarket, domain.KindDCA}
+	out := make([]dashboardDistributionItem, 0, len(kinds))
+	for _, kind := range kinds {
+		breakdown := stats.ByKind[string(kind)]
+		item := dashboardDistributionItem{
+			Kind:    kind,
+			Pending: pendingByKind[kind],
+		}
+		if breakdown != nil {
+			item.Total = breakdown.TotalRegistered + breakdown.TotalExecuted + breakdown.TotalCancelled + breakdown.TotalExpired
+			item.Executed = breakdown.TotalExecuted
+			item.Cancelled = breakdown.TotalCancelled
+			item.Expired = breakdown.TotalExpired
+		}
+		if item.Total == 0 {
+			item.Total = item.Pending
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func dashboardActivity(records []*domain.ExecutionRecord) []dashboardActivityItem {
+	out := make([]dashboardActivityItem, 0, len(records))
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		occurredAt := record.RegisteredAt
+		if record.ExecutedAt != nil {
+			occurredAt = *record.ExecutedAt
+		}
+		out = append(out, dashboardActivityItem{
+			ID:            record.ID,
+			CommitmentRef: anonymizedHashRef(record.CommitmentHash),
+			TxRef:         anonymizedHashRef(record.TxHash),
+			ChainID:       record.ChainID,
+			Kind:          record.Kind,
+			Status:        record.Status,
+			OccurredAt:    occurredAt,
+		})
+	}
+	return out
+}
+
+func anonymizedHashRef(hash string) string {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return ""
+	}
+	if len(hash) <= 14 {
+		return hash
+	}
+	return hash[:8] + "..." + hash[len(hash)-6:]
 }
 
 func (h *Handler) GetEnclaveAttestation(c *gin.Context) {

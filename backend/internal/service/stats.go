@@ -27,10 +27,12 @@ func NewStatsService(repo domain.ExecutionRepository, cache *redis.Client) *Stat
 func (s *StatsService) GetStatistics(ctx context.Context, chainID int64) (*domain.Statistics, error) {
 	key := fmt.Sprintf("stats:chain:%d", chainID)
 
-	if b, err := s.cache.Get(ctx, key).Bytes(); err == nil {
-		var stats domain.Statistics
-		if json.Unmarshal(b, &stats) == nil {
-			return &stats, nil
+	if s.cache != nil {
+		if b, err := s.cache.Get(ctx, key).Bytes(); err == nil {
+			var stats domain.Statistics
+			if json.Unmarshal(b, &stats) == nil {
+				return &stats, nil
+			}
 		}
 	}
 
@@ -39,8 +41,10 @@ func (s *StatsService) GetStatistics(ctx context.Context, chainID int64) (*domai
 		return nil, err
 	}
 
-	if b, err := json.Marshal(stats); err == nil {
-		s.cache.Set(ctx, key, b, statsCacheTTL)
+	if s.cache != nil {
+		if b, err := json.Marshal(stats); err == nil {
+			s.cache.Set(ctx, key, b, statsCacheTTL)
+		}
 	}
 	return stats, nil
 }
