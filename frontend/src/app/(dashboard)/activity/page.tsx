@@ -8,9 +8,11 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { StatusChip } from "@/components/ui/StatusChip";
-import { useExecutions } from "@/hooks/useBackendApi";
+import { useExecutions } from "@/hooks/api/useActivityApi";
 import { type IntentKind, type ExecutionStatus } from "@/lib/api";
+import { getTxUrl } from "@/lib/explorerUrl";
 import { formatDistanceToNow } from "@/lib/timeUtils";
+import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 20;
 
@@ -56,6 +58,10 @@ export default function ActivityPage() {
   const executions = execData?.data ?? [];
   const hasNext = executions.length === PAGE_SIZE;
   const hasPrev = offset > 0;
+
+  function openExplorerTab(url: string) {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
 
   return (
     <>
@@ -170,34 +176,72 @@ export default function ActivityPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {executions.map((e) => (
-                    <tr key={e.id} className="border-b border-outline-variant/5 hover:bg-surface-container-high/50 transition-colors">
-                      <td className="px-3 md:px-4 py-3 font-tabular text-on-surface-variant text-xs whitespace-nowrap">
-                        {e.commitment_hash.slice(0, 8)}...{e.commitment_hash.slice(-6)}
-                      </td>
-                      <td className="px-3 md:px-4 py-3 font-tabular text-on-surface-variant text-xs whitespace-nowrap">
-                        {e.tx_hash ? `${e.tx_hash.slice(0, 8)}...${e.tx_hash.slice(-6)}` : "-"}
-                      </td>
-                      <td className="px-3 md:px-4 py-3 text-on-surface-variant text-xs whitespace-nowrap">
-                        {e.chain_id === 421614 ? "Arb Sepolia" : `Chain ${e.chain_id}`}
-                      </td>
-                      <td className="px-3 md:px-4 py-3 text-on-surface text-xs whitespace-nowrap">
-                        {kindLabel(e.kind)}
-                      </td>
-                      <td className="px-3 md:px-4 py-3 whitespace-nowrap">
-                        <StatusChip status={e.status} />
-                      </td>
-                      <td className="px-3 md:px-4 py-3 text-on-surface font-tabular whitespace-nowrap">
-                        {e.gas_used > 0 ? e.gas_used.toLocaleString("en-US") : "-"}
-                      </td>
-                      <td className="px-3 md:px-4 py-3 text-on-surface-variant text-xs whitespace-nowrap">
-                        {formatDistanceToNow(e.registered_at)}
-                      </td>
-                      <td className="px-3 md:px-4 py-3 text-on-surface-variant text-xs whitespace-nowrap">
-                        {e.executed_at ? formatDistanceToNow(e.executed_at) : "-"}
-                      </td>
-                    </tr>
-                  ))}
+                  {executions.map((e) => {
+                    const txUrl = e.tx_hash ? getTxUrl(e.chain_id, e.tx_hash) : null;
+                    const rowClass = cn(
+                      "group border-b border-outline-variant/5",
+                      txUrl && "cursor-pointer",
+                    );
+                    const cellClass = cn(
+                      "px-3 md:px-4 py-3 transition-colors",
+                      txUrl && "group-hover:bg-surface-container-high",
+                    );
+                    const cells = (
+                      <>
+                        <td className={cn(cellClass, "font-tabular text-on-surface-variant text-xs whitespace-nowrap")}>
+                          {e.commitment_hash.slice(0, 8)}...{e.commitment_hash.slice(-6)}
+                        </td>
+                        <td className={cn(cellClass, "font-tabular text-on-surface-variant text-xs whitespace-nowrap")}>
+                          {e.tx_hash ? `${e.tx_hash.slice(0, 8)}...${e.tx_hash.slice(-6)}` : "-"}
+                        </td>
+                        <td className={cn(cellClass, "text-on-surface-variant text-xs whitespace-nowrap")}>
+                          {e.chain_id === 421614 ? "Arb Sepolia" : `Chain ${e.chain_id}`}
+                        </td>
+                        <td className={cn(cellClass, "text-on-surface text-xs whitespace-nowrap")}>
+                          {kindLabel(e.kind)}
+                        </td>
+                        <td className={cn(cellClass, "whitespace-nowrap")}>
+                          <StatusChip status={e.status} />
+                        </td>
+                        <td className={cn(cellClass, "text-on-surface font-tabular whitespace-nowrap")}>
+                          {e.gas_used > 0 ? e.gas_used.toLocaleString("en-US") : "-"}
+                        </td>
+                        <td className={cn(cellClass, "text-on-surface-variant text-xs whitespace-nowrap")}>
+                          {formatDistanceToNow(e.registered_at)}
+                        </td>
+                        <td className={cn(cellClass, "text-on-surface-variant text-xs whitespace-nowrap")}>
+                          {e.executed_at ? formatDistanceToNow(e.executed_at) : "-"}
+                        </td>
+                      </>
+                    );
+
+                    if (!txUrl) {
+                      return (
+                        <tr key={e.id} className={rowClass}>
+                          {cells}
+                        </tr>
+                      );
+                    }
+
+                    return (
+                      <tr
+                        key={e.id}
+                        className={rowClass}
+                        role="link"
+                        tabIndex={0}
+                        onClick={() => openExplorerTab(txUrl)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openExplorerTab(txUrl);
+                          }
+                        }}
+                        aria-label={`Open transaction ${e.tx_hash} in block explorer`}
+                      >
+                        {cells}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
