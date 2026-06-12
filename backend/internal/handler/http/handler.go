@@ -68,12 +68,12 @@ type dashboardAnalyticsResponse struct {
 }
 
 type dashboardDistributionItem struct {
-	Kind      domain.IntentKind `json:"kind"`
-	Total     int64             `json:"total"`
-	Executed  int64             `json:"executed"`
-	Pending   int64             `json:"pending"`
-	Cancelled int64             `json:"cancelled"`
-	Expired   int64             `json:"expired"`
+	Kind       domain.IntentKind `json:"kind"`
+	Total      int64             `json:"total"`
+	Registered int64             `json:"registered"`
+	Executed   int64             `json:"executed"`
+	Cancelled  int64             `json:"cancelled"`
+	Expired    int64             `json:"expired"`
 }
 
 type dashboardActivityItem struct {
@@ -115,16 +115,6 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 		return
 	}
 
-	pendingByKind := make(map[domain.IntentKind]int64)
-	for _, kind := range []domain.IntentKind{domain.KindLimit, domain.KindMarket, domain.KindDCA} {
-		n, err := h.intentRepo.CountByKindsAndStatuses(c.Request.Context(), chainID, []domain.IntentKind{kind}, activeStatuses)
-		if err != nil {
-			errResponse(c, err)
-			return
-		}
-		pendingByKind[kind] = n
-	}
-
 	records, err := h.stats.GetExecutions(c.Request.Context(), chainID, domain.ExecutionFilters{
 		Status: domain.StatusExecuted,
 	}, 5, 0)
@@ -139,7 +129,7 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 		TotalExecutions:             stats.TotalExecutions,
 		PendingOrderFillCommitments: pendingOrderFill,
 		PendingDCACommitments:       pendingDCA,
-		IntentDistribution:          dashboardDistribution(stats, pendingByKind),
+		IntentDistribution:          dashboardDistribution(stats),
 		RecentActivity:              dashboardActivity(records),
 	})
 }
@@ -181,24 +171,21 @@ func (h *Handler) ListExecutions(c *gin.Context) {
 	})
 }
 
-func dashboardDistribution(stats *domain.Statistics, pendingByKind map[domain.IntentKind]int64) []dashboardDistributionItem {
+func dashboardDistribution(stats *domain.Statistics) []dashboardDistributionItem {
 	kinds := []domain.IntentKind{domain.KindLimit, domain.KindMarket, domain.KindDCA}
 	out := make([]dashboardDistributionItem, 0, len(kinds))
 	for _, kind := range kinds {
 		breakdown := stats.ByKind[string(kind)]
 		item := dashboardDistributionItem{
-			Kind:    kind,
-			Pending: pendingByKind[kind],
+			Kind: kind,
 		}
 		if breakdown != nil {
-			item.Total = breakdown.TotalRegistered + breakdown.TotalExecuted + breakdown.TotalCancelled + breakdown.TotalExpired
+			item.Registered = breakdown.TotalRegistered
 			item.Executed = breakdown.TotalExecuted
 			item.Cancelled = breakdown.TotalCancelled
 			item.Expired = breakdown.TotalExpired
 		}
-		if item.Total == 0 {
-			item.Total = item.Pending
-		}
+		item.Total = item.Registered + item.Executed + item.Cancelled + item.Expired
 		out = append(out, item)
 	}
 	return out

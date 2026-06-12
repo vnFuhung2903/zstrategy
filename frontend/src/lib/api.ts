@@ -38,8 +38,8 @@ export interface ExecutionRecord {
 export interface DashboardDistributionItem {
   kind:      IntentKind;
   total:     number;
+  registered: number;
   executed:  number;
-  pending:   number;
   cancelled: number;
   expired:   number;
 }

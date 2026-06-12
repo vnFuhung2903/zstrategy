@@ -190,9 +190,19 @@ func (r *dashboardExecutionRepo) GetStatistics(_ context.Context, chainID int64)
 		if _, ok := stats.ByKind[string(record.Kind)]; !ok {
 			stats.ByKind[string(record.Kind)] = &domain.KindBreakdown{}
 		}
-		if record.Status == domain.StatusExecuted {
+		switch record.Status {
+		case domain.StatusRegistered:
+			stats.TotalRegistered++
+			stats.ByKind[string(record.Kind)].TotalRegistered++
+		case domain.StatusExecuted:
 			stats.TotalExecutions++
 			stats.ByKind[string(record.Kind)].TotalExecuted++
+		case domain.StatusCancelled:
+			stats.TotalCancelled++
+			stats.ByKind[string(record.Kind)].TotalCancelled++
+		case domain.StatusExpired:
+			stats.TotalExpired++
+			stats.ByKind[string(record.Kind)].TotalExpired++
 		}
 	}
 	return stats, nil
@@ -280,6 +290,62 @@ func TestDashboardReturnsFiveExecutedRecentActivities(t *testing.T) {
 		if item.Status != domain.StatusExecuted {
 			t.Fatalf("dashboard recent status = %s, want executed", item.Status)
 		}
+	}
+}
+
+func TestDashboardDistributionUsesRegisteredExecutionStatus(t *testing.T) {
+	now := time.Now()
+	records := make([]*domain.ExecutionRecord, 0, 10)
+	for i := 0; i < 4; i++ {
+		executedAt := now.Add(-time.Duration(i) * time.Minute)
+		records = append(records, &domain.ExecutionRecord{
+			ID:             uint(i + 1),
+			CommitmentHash: hash("d" + strconv.Itoa(i)),
+			ChainID:        421614,
+			Status:         domain.StatusExecuted,
+			Kind:           domain.KindDCA,
+			TxHash:         hash("e" + strconv.Itoa(i)),
+			RegisteredAt:   executedAt.Add(-time.Minute),
+			ExecutedAt:     &executedAt,
+		})
+	}
+	for i := 0; i < 6; i++ {
+		records = append(records, &domain.ExecutionRecord{
+			ID:             uint(i + 10),
+			CommitmentHash: hash("f" + strconv.Itoa(i)),
+			ChainID:        421614,
+			Status:         domain.StatusRegistered,
+			Kind:           domain.KindDCA,
+			RegisteredAt:   now.Add(-time.Duration(i) * time.Minute),
+		})
+	}
+
+	execRepo := &dashboardExecutionRepo{records: records}
+	intentRepo := &handlerIntentRepo{}
+	statsSvc := service.NewStatsService(execRepo, nil)
+	router := NewRouter(NewHandler(statsSvc, nil, intentRepo, nil, nil, ""), false)
+
+	rec := get(router, "/api/v1/dashboard?chain_id=421614")
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		Data dashboardAnalyticsResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	var dca dashboardDistributionItem
+	for _, item := range body.Data.IntentDistribution {
+		if item.Kind == domain.KindDCA {
+			dca = item
+			break
+		}
+	}
+	if dca.Total != 10 || dca.Executed != 4 || dca.Registered != 6 || dca.Cancelled != 0 || dca.Expired != 0 {
+		t.Fatalf("dca distribution = %#v, want total=10 executed=4 registered=6 cancelled=0 expired=0", dca)
 	}
 }
 

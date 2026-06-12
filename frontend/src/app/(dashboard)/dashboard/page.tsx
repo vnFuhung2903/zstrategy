@@ -68,7 +68,7 @@ function MetricCard({
 }
 
 function distributionTotal(item: DashboardDistributionItem) {
-  return item.total > 0 ? item.total : item.pending + item.executed + item.cancelled + item.expired;
+  return item.total;
 }
 
 export default function DashboardPage() {
@@ -131,9 +131,6 @@ export default function DashboardPage() {
             <div className="flex items-start justify-between gap-4 mb-6">
               <div>
                 <p className="text-xs text-on-surface-variant uppercase tracking-widest">Intent Distribution</p>
-                <p className="mt-1 text-sm text-on-surface-variant">
-                  Indexed intent classes with pending backend commitments included.
-                </p>
               </div>
               <Badge variant="primary" dot>Live</Badge>
             </div>
@@ -156,9 +153,9 @@ export default function DashboardPage() {
                         <div className="w-full h-44 flex items-end">
                           <div
                             className={cn(
-                              "w-full rounded-t-sm bg-surface-container-highest hover:bg-surface-bright transition-colors",
-                              item.kind === "DCA" && "bg-secondary-container/35 hover:bg-secondary-container/50",
-                              item.kind === "MARKET" && "bg-primary-container/25 hover:bg-primary-container/35",
+                              "w-full rounded-t-sm bg-tertiary-container/50 hover:bg-tertiary-container transition-colors",
+                              item.kind === "DCA" && "bg-secondary-container/50 hover:bg-secondary-container",
+                              item.kind === "MARKET" && "bg-primary-container/50 hover:bg-primary-container",
                             )}
                             style={{ height: `${Math.max(pct, 8)}%` }}
                             title={`${kindLabel(item.kind)}: ${total}`}
@@ -181,8 +178,8 @@ export default function DashboardPage() {
                         <span className="font-tabular text-on-surface">{formatCount(item.executed)}</span>
                       </div>
                       <div className="mt-1 flex items-center justify-between gap-2 text-xs">
-                        <span className="text-on-surface-variant">Pending</span>
-                        <span className="font-tabular text-secondary">{formatCount(item.pending)}</span>
+                        <span className="text-on-surface-variant">Registered</span>
+                        <span className="font-tabular text-secondary">{formatCount(item.registered)}</span>
                       </div>
                     </div>
                   ))}
