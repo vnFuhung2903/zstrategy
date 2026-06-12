@@ -176,7 +176,11 @@ func (r *ExecutionRepo) List(ctx context.Context, chainID int64, filters domain.
 		pattern := "%" + filters.Query + "%"
 		q = q.Where("commitment_hash ILIKE ? OR tx_hash ILIKE ?", pattern, pattern)
 	}
-	err := q.Order("registered_at DESC").Limit(limit).Offset(offset).Find(&records).Error
+	order := "registered_at DESC"
+	if filters.Status == domain.StatusExecuted {
+		order = "executed_at DESC"
+	}
+	err := q.Order(order).Limit(limit).Offset(offset).Find(&records).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, fmt.Errorf("list executions: %w", err)
 	}

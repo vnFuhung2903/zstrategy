@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	stdhttp "net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +151,136 @@ func newClaimRouter(repo *handlerIntentRepo, fn func(context.Context, string, do
 
 func executableClaim(context.Context, string, domain.ExecutionTicket) (service.TicketClaimCheck, error) {
 	return service.TicketClaimCheck{Executable: true, CommitmentPending: true}, nil
+}
+
+type dashboardExecutionRepo struct {
+	records     []*domain.ExecutionRecord
+	lastFilters domain.ExecutionFilters
+	lastLimit   int
+	lastOffset  int
+}
+
+func (r *dashboardExecutionRepo) Save(context.Context, *domain.ExecutionRecord) error { return nil }
+
+func (r *dashboardExecutionRepo) UpdateStatus(context.Context, string, domain.ExecutionStatus, string, uint64, uint64, *time.Time) error {
+	return nil
+}
+
+func (r *dashboardExecutionRepo) UpdateKind(context.Context, string, domain.IntentKind) error {
+	return nil
+}
+
+func (r *dashboardExecutionRepo) ExistsByHash(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (r *dashboardExecutionRepo) FindByHash(context.Context, string) (*domain.ExecutionRecord, error) {
+	return nil, nil
+}
+
+func (r *dashboardExecutionRepo) GetStatistics(_ context.Context, chainID int64) (*domain.Statistics, error) {
+	stats := &domain.Statistics{
+		ChainID: chainID,
+		ByKind:  make(map[string]*domain.KindBreakdown),
+	}
+	for _, record := range r.records {
+		if record.ChainID != chainID {
+			continue
+		}
+		if _, ok := stats.ByKind[string(record.Kind)]; !ok {
+			stats.ByKind[string(record.Kind)] = &domain.KindBreakdown{}
+		}
+		if record.Status == domain.StatusExecuted {
+			stats.TotalExecutions++
+			stats.ByKind[string(record.Kind)].TotalExecuted++
+		}
+	}
+	return stats, nil
+}
+
+func (r *dashboardExecutionRepo) List(_ context.Context, chainID int64, filters domain.ExecutionFilters, limit, offset int) ([]*domain.ExecutionRecord, error) {
+	r.lastFilters = filters
+	r.lastLimit = limit
+	r.lastOffset = offset
+
+	var out []*domain.ExecutionRecord
+	for _, record := range r.records {
+		if record.ChainID != chainID {
+			continue
+		}
+		if filters.Status != "" && record.Status != filters.Status {
+			continue
+		}
+		if filters.Kind != "" && record.Kind != filters.Kind {
+			continue
+		}
+		out = append(out, record)
+	}
+	if offset > len(out) {
+		return nil, nil
+	}
+	out = out[offset:]
+	if limit > 0 && limit < len(out) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func TestDashboardReturnsFiveExecutedRecentActivities(t *testing.T) {
+	now := time.Now()
+	records := make([]*domain.ExecutionRecord, 0, 7)
+	for i := 0; i < 6; i++ {
+		executedAt := now.Add(-time.Duration(i) * time.Minute)
+		records = append(records, &domain.ExecutionRecord{
+			ID:             uint(i + 1),
+			CommitmentHash: hash("a" + strconv.Itoa(i)),
+			ChainID:        421614,
+			Status:         domain.StatusExecuted,
+			Kind:           domain.KindLimit,
+			TxHash:         hash("b" + strconv.Itoa(i)),
+			RegisteredAt:   executedAt.Add(-time.Minute),
+			ExecutedAt:     &executedAt,
+		})
+	}
+	records = append(records, &domain.ExecutionRecord{
+		ID:             99,
+		CommitmentHash: hash("cc"),
+		ChainID:        421614,
+		Status:         domain.StatusRegistered,
+		Kind:           domain.KindDCA,
+		RegisteredAt:   now,
+	})
+
+	execRepo := &dashboardExecutionRepo{records: records}
+	intentRepo := &handlerIntentRepo{}
+	statsSvc := service.NewStatsService(execRepo, nil)
+	router := NewRouter(NewHandler(statsSvc, nil, intentRepo, nil, nil, ""), false)
+
+	rec := get(router, "/api/v1/dashboard?chain_id=421614")
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, stdhttp.StatusOK, rec.Body.String())
+	}
+	if execRepo.lastFilters.Status != domain.StatusExecuted {
+		t.Fatalf("dashboard status filter = %s, want executed", execRepo.lastFilters.Status)
+	}
+	if execRepo.lastLimit != 5 {
+		t.Fatalf("dashboard limit = %d, want 5", execRepo.lastLimit)
+	}
+
+	var body struct {
+		Data dashboardAnalyticsResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Data.RecentActivity) != 5 {
+		t.Fatalf("recent activity rows = %d, want 5", len(body.Data.RecentActivity))
+	}
+	for _, item := range body.Data.RecentActivity {
+		if item.Status != domain.StatusExecuted {
+			t.Fatalf("dashboard recent status = %s, want executed", item.Status)
+		}
+	}
 }
 
 func TestRegisterOrderIntentRejectsPlaintextWitnessFields(t *testing.T) {

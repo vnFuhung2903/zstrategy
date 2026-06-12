@@ -125,7 +125,9 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 		pendingByKind[kind] = n
 	}
 
-	records, err := h.stats.GetExecutions(c.Request.Context(), chainID, domain.ExecutionFilters{}, 6, 0)
+	records, err := h.stats.GetExecutions(c.Request.Context(), chainID, domain.ExecutionFilters{
+		Status: domain.StatusExecuted,
+	}, 5, 0)
 	if err != nil {
 		errResponse(c, err)
 		return
