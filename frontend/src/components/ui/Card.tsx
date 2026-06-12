@@ -10,7 +10,7 @@ function Card({ className, variant = "default", ...props }: CardProps) {
     <div
       className={cn(
         "rounded-md transition-colors duration-150",
-        variant === "default" && "bg-surface-container hover:bg-surface-container-high",
+        variant === "default" && "bg-surface-container",
         variant === "trust" && "trust-zone glow-primary",
         variant === "trust-violet" && "trust-zone-violet glow-secondary",
         className,
