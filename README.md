@@ -1,6 +1,6 @@
 # zstrategy Current System
 
-This document is the authoritative source of truth for the current zstrategy system. Other docs may be historical, archived, or secondary. If another document conflicts with this one, prefer this document.
+This document is the primary current documentation guide for the zstrategy system. Active code, runtime configuration, and tests are the strongest evidence for what is implemented. If documentation conflicts with active code, prefer the code and update the documentation conservatively.
 
 ## Status Convention
 
@@ -8,7 +8,7 @@ This document is the authoritative source of truth for the current zstrategy sys
 - Future work: planned but not implemented.
 - Legacy: old implementation or historical design.
 
-Use `intent` for current product, code, API, and thesis language. The older term `strategy` appears only in legacy or historical context.
+Use `intent` for current product, code, API, UI, and thesis language. Older terms such as `strategy` and `keeper` may still appear in active identifiers, comments, tests, or generated artifacts; treat them as legacy wording unless referring to exact code.
 
 ## Project Vision
 
@@ -53,6 +53,7 @@ Out of current scope:
 
 - Real AWS Nitro Enclave deployment.
 - Production hardware isolation.
+- Private-mempool or Flashbots Protect transaction routing.
 - Cryptographic executor-specific ticket binding.
 - Multi-backend shared DCA locks.
 - Strict on-chain DCA round ordering.
@@ -111,22 +112,25 @@ Location: `frontend/`
 
 Current responsibilities:
 
-- Next.js app for order creation, DCA creation, vault operations, activity, and public executor UI.
+- Next.js app for dashboard analytics, order creation, DCA creation, vault operations, activity, settings, and public executor UI.
 - Wallet integration through wagmi and viem.
 - Client-side commitment generation.
 - Local encrypted witness package creation.
 - Simulated enclave attestation verification through the backend attestation route.
 - Local IndexedDB metadata for user-owned intents.
+- Encrypted local backup/import UI for user-owned intent metadata.
 - Backend registration calls after on-chain commitment confirmation.
 - User-visible retry for backend sync failures after successful wallet transactions.
 
 Important frontend routes:
 
+- `/dashboard` - dashboard analytics and recent activity.
 - `/orders` - limit and market order creation.
 - `/dca` - DCA batch creation.
 - `/executor` - public executor ticket claim and submission UI.
 - `/vault` - collateral/vault UI.
 - `/activity` - indexed execution/activity view.
+- `/settings` - local encrypted backup/import and user settings.
 
 ### Backend
 
@@ -148,6 +152,7 @@ Current HTTP routes:
 | --- | --- | --- | --- |
 | `GET` | `/health` | Current | Liveness. |
 | `GET` | `/metrics` | Current | Prometheus metrics when enabled. |
+| `GET` | `/api/v1/dashboard` | Current | Dashboard analytics and recent activity summary. |
 | `GET` | `/api/v1/stats` | Current | Aggregate indexed stats. |
 | `GET` | `/api/v1/executions` | Current | Paginated execution records. |
 | `POST` | `/api/v1/enclave/attest` | Current | Proxy simulated enclave attestation metadata/report to the frontend. |
@@ -223,8 +228,6 @@ Current contract responsibilities:
   - generated UltraHonk verifier for DCA rounds.
 - DEX adapter contracts
   - execute swaps for settlement.
-- `GasVault.sol`
-  - Legacy keeper-era gas tank. It remains in the repository for historical deployments and withdrawals, but current v2 public execution does not debit it.
 
 ## Intent Lifecycle
 
@@ -323,7 +326,8 @@ The nullifier is single-use and prevents replay.
 
 Circuit artifact notes:
 
-- `frontend` copies `circuits/order_fill/target/order_fill.json` into public assets before dev/build.
+- The enclave proof service loads compiled circuit JSON from `ORDER_FILL_CIRCUIT_JSON` and `DCA_CIRCUIT_JSON`; build or provide `circuits/*/target/*.json` before real proof generation.
+- The frontend loads circuit-aligned commitment and witness helpers that must stay byte-identical to the Noir circuits and Solidity public-input layout.
 - Regenerating Solidity verifiers from Barretenberg output may require manually renaming the final generated verifier contract to match the file (`OrderFillVerifier` or `DCAVerifier`) and linking `ZKTranscriptLib`.
 - Circuit compilation and Barretenberg verifier generation are easiest from a Linux or WSL shell.
 
@@ -421,7 +425,7 @@ Fee model:
 - Public executors pay gas upfront.
 - Executor and prover are paid from gross output tokens.
 - Fee bps are registry settings with caps.
-- `GasVault` is not used by current v2 public execution.
+- No active gas-reimbursement vault is used by current v2 public execution.
 
 ## Privacy And Security Model
 
@@ -456,6 +460,7 @@ Security boundaries:
 Known security limitations:
 
 - No real TEE hardware isolation yet.
+- No private-mempool or Flashbots Protect transaction path is implemented.
 - No cryptographic executor-specific ticket binding.
 - Claim simulation can race the next block or another executor transaction.
 - Backend ticket list is eventually consistent with chain indexing.
@@ -475,7 +480,7 @@ Known security limitations:
 | Contracts | Solidity, Hardhat, OpenZeppelin |
 | Circuits | Noir, Barretenberg, UltraHonk |
 | Oracle | Chainlink feeds configured in `CommitmentRegistry.priceFeeds` |
-| DEX | Adapter interface with Uniswap/mock adapters |
+| DEX | Adapter interface with Uniswap adapters |
 | Metrics | Prometheus and Grafana |
 | Demo chain | Arbitrum Sepolia |
 
@@ -547,21 +552,21 @@ npx hardhat compile
 npx hardhat test
 ```
 
-Docker dependencies from repo root:
+Docker Compose local stack from repo root:
 
 ```powershell
-docker compose up postgres redis
+docker compose up postgres redis backend prometheus grafana
 ```
 
-Observability:
-
-```powershell
-docker compose up prometheus grafana
-```
+This starts PostgreSQL, Redis, the backend API, Prometheus, and Grafana. The backend container enables `METRICS_ENABLED=true` and exposes `GET /metrics` on port `8080`; Prometheus scrapes `backend:8080/metrics`.
 
 Prometheus: `http://localhost:9090`
 
 Grafana: `http://localhost:3000`
+
+For database/cache only, run `docker compose up postgres redis`.
+
+The compose file does not run the simulated enclave service. Start `enclave` separately for attestation and proof-evaluation flows; override `ENCLAVE_URL` if the default `http://host.docker.internal:3002` is not correct for your Docker environment.
 
 ## Setup Notes
 
@@ -572,7 +577,7 @@ Component-specific setup remains in the local READMEs:
 - `enclave/README.md`
 - `executor/README.md`
 
-Those files are secondary setup references. For current architecture and thesis wording, prefer this document.
+Those files are secondary setup references. For current architecture and thesis wording, use this document as the starting point and verify implementation claims against active code.
 
 ## Current Limitations
 
@@ -580,10 +585,11 @@ Those files are secondary setup references. For current architecture and thesis 
 - Real AWS Nitro Enclave deployment is not implemented.
 - Public executor tickets are not cryptographically bound to one executor.
 - Backend leases are short coordination hints, not settlement authority.
-- `GET /executor/tickets` is backend-ready only; claim performs fresher simulation.
+- `GET /api/v1/executor/tickets` is backend-ready only; claim performs fresher simulation.
 - Ticket execution can still fail after claim due to oracle movement, chain state changes, gas issues, or competing executors.
 - DCA group locking is process-local and does not protect multi-replica deployments.
 - DCA strict on-chain ordering is not implemented.
+- Private-mempool or Flashbots Protect routing is not implemented; any UI label should be treated as non-functional until a real transaction path exists.
 - Backend sync retry exists for the active page session, but full recovery after reload requires more product work.
 - The CLI executor claims the next backend-selected ticket; the frontend executor supports claiming a selected commitment hash.
 - Production anti-spam, rate limits, monitoring, key management, and deployment hardening are incomplete.
@@ -596,6 +602,7 @@ Future work only; do not describe these as current behavior:
 - Executor-specific ticket binding.
 - Shared scheduler locks for multi-backend deployments.
 - DCA `prevNullifier` circuit and registry enforcement for strict ordering.
+- Private-mempool or Flashbots Protect transaction routing.
 - Grid trading.
 - Copy trading.
 - Multi-chain production deployment.
@@ -605,4 +612,4 @@ Future work only; do not describe these as current behavior:
 
 ## Legacy Material
 
-The old keeper/Shamir design, GasVault reimbursement flow, implementation handoffs, reviews, and long design histories are archived under `docs/archive/`. They are historical background only and should not be read by default for current coding or thesis writing.
+The old keeper/Shamir design, historical gas-reimbursement flow, implementation handoffs, reviews, and long design histories are archived under `docs/archive/`. They are historical background only and should not be read by default for current coding or thesis writing.

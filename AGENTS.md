@@ -4,11 +4,17 @@ Behavioral guidelines for coding agents working in this repository.
 
 ## Project Context
 
-- `README.md` is the single source of truth for current zstrategy system behavior, architecture, terminology, commands, APIs, and thesis writing.
+- Active code is the strongest evidence for what is implemented. Runtime/config/test files are next strongest.
+- `README.md` is the primary current documentation guide, but verify implementation claims against active code before relying on them.
 - Read `README.md` before touching code or current documentation.
 - Do not read docs under `docs/archive/` by default. Archived docs are historical only; read them only when the user explicitly asks for historical context.
-- If any other document conflicts with `README.md`, prefer `README.md`.
-- Use `intent` for current product, code, API, and UI language. Treat `strategy` as legacy terminology unless the user explicitly asks about historical material.
+- If archived docs, secondary READMEs, comments, or thesis prose conflict with active code, treat the active codebase as implementation truth and update documentation conservatively.
+- Thesis claims must not exceed evidence from active code and runtime/config/test files.
+- Use `intent` for current product, code, API, UI, and thesis language. Treat `strategy`, `keeper`, and similar terms as legacy unless they appear in active code identifiers or historical context.
+- Do not rewrite thesis prose unless the user specifically asks for thesis edits.
+- Avoid production claims. This is a thesis/demo system unless active code and deployment evidence prove otherwise.
+- The simulated Nitro-style prover is not real hardware isolation. Do not describe it as a deployed AWS Nitro Enclave.
+- Do not claim executor-specific ticket binding, shared/multi-backend DCA locks, strict on-chain DCA ordering, or real Nitro deployment as current behavior.
 
 ## 1. Think Before Coding
 
