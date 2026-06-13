@@ -1,17 +1,15 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: zstrategy
-      POSTGRES_PASSWORD: zstrategy
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: zstrategy
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U zstrategy"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -21,8 +19,6 @@ services:
     restart: unless-stopped
     ports:
       - "6379:6379"
-    volumes:
-      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -38,13 +34,12 @@ services:
       - "8080:8080"
     environment:
       PORT: "8080"
-      DATABASE_URL: postgres://zstrategy:zstrategy@postgres:5432/zstrategy?sslmode=disable
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/zstrategy?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      RPC_URL: ${RPC_URL}
+      RPC_URL: ${RPC_URL:-}
       CHAIN_ID: ${CHAIN_ID:-421614}
-      COMMITMENT_REGISTRY_ADDRESS: ${COMMITMENT_REGISTRY_ADDRESS}
-      KEEPER_URL: http://keeper:3001
-      KEEPER_API_SECRET: ${API_SECRET}
+      COMMITMENT_REGISTRY_ADDRESS: ${COMMITMENT_REGISTRY_ADDRESS:-}
+      ENCLAVE_URL: ${ENCLAVE_URL:-http://host.docker.internal:3002}
       METRICS_ENABLED: "true"
     depends_on:
       postgres:
@@ -52,26 +47,33 @@ services:
       redis:
         condition: service_healthy
 
-  keeper:
-    build:
-      context: ./keeper
-      dockerfile: Dockerfile
+  # ── Observability stack ─────────────────────────────────────────────────────
+  # Prometheus scrapes backend:8080/metrics every 15s.
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
     restart: unless-stopped
     ports:
-      - "3001:3001"
-    environment:
-      RPC_URL: ${RPC_URL}
-      CHAIN_ID: ${CHAIN_ID:-421614}
-      KEEPER_PRIVATE_KEY: ${KEEPER_PRIVATE_KEY}
-      COMMITMENT_REGISTRY_ADDRESS: ${COMMITMENT_REGISTRY_ADDRESS}
-      COLLATERAL_VAULT_ADDRESS: ${COLLATERAL_VAULT_ADDRESS}
-      API_PORT: "3001"
-      API_SECRET: ${API_SECRET}
-      BACKEND_URL: http://backend:8080
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
     depends_on:
-      postgres:
-        condition: service_healthy
+      - backend
 
-volumes:
-  postgres_data:
-  redis_data:
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
