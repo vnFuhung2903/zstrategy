@@ -20,10 +20,6 @@ export default function SettingsPage() {
           <CardContent className="space-y-3">
             {[
               {
-                title: "Flashbots Protect",
-                desc: "Route transactions via private mempool",
-              },
-              {
                 title: "Per-Order Secrets",
                 desc: "Derive a unique user_secret per order to prevent cross-order linking",
               },
@@ -41,7 +37,6 @@ export default function SettingsPage() {
             ))}
           </CardContent>
         </Card>
-
         <BackupCard />
       </div>
     </>

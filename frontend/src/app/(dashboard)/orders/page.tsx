@@ -271,7 +271,9 @@ export default function OrdersPage() {
   }, [kind, publicClient, chainId, marketOracleKey, pair.baseToken.address, pair.baseToken.name, pair.quoteToken.address, pair.quoteToken.name]);
 
   async function handleSubmit() {
-    if (!isConnected || !address || amountBig === BigInt(0) || priceBig === BigInt(0) || !expiry) return;
+    // MARKET SELL intentionally uses price=0 as its private always-fill sentinel.
+    // Reject a zero price only when it represents an invalid LIMIT target.
+    if (!isConnected || !address || amountBig === BigInt(0) || (kind === "LIMIT" && priceBig === BigInt(0)) || !expiry) return;
     setSubmitError(null);
     setBackendSyncError(null);
 
@@ -421,7 +423,7 @@ export default function OrdersPage() {
 
   return (
     <>
-      <Topbar title="Order Architect" />
+      <Topbar title="Limit/Market Order" />
       <div className="p-4 md:p-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 max-w-7xl">
 

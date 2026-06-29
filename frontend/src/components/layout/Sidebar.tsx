@@ -18,13 +18,13 @@ import { cn } from "@/lib/utils";
 import { useState } from "react";
 
 const nav = [
-  { href: "/dashboard", label: "Command Center",   icon: LayoutDashboard },
-  { href: "/orders",    label: "Order Builder",    icon: Shield },
-  { href: "/vault",     label: "Vault",            icon: DollarSign },
-  { href: "/dca",       label: "DCA Pulse",        icon: Repeat2 },
-  { href: "/executor",  label: "Executor",         icon: Terminal },
-  { href: "/activity",  label: "Activity",         icon: Activity },
-  { href: "/settings",  label: "Settings",         icon: Settings },
+  { href: "/dashboard", label: "Dashboard",           icon: LayoutDashboard },
+  { href: "/vault",     label: "Collateral Vault",    icon: DollarSign },
+  { href: "/orders",    label: "Order Builder",       icon: Shield },
+  { href: "/dca",       label: "DCA Builder",         icon: Repeat2 },
+  { href: "/executor",  label: "Commitment Executor", icon: Terminal },
+  { href: "/activity",  label: "Recent Activities",   icon: Activity },
+  { href: "/settings",  label: "Settings",            icon: Settings },
 ];
 
 function NavItems({ onNavigate }: { onNavigate?: () => void }) {

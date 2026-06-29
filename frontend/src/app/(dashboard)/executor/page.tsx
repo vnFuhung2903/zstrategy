@@ -259,13 +259,13 @@ export default function ExecutorPage() {
 
   return (
     <>
-      <Topbar title="Executor Node" />
+      <Topbar title="Commitment Executor" />
       <div className="p-4 md:p-6 lg:p-8 space-y-6 max-w-[1500px]">
         <section className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-outline-variant/10 pb-6">
           <div>
-            <h1 className="font-display text-4xl md:text-5xl font-bold text-on-surface mb-2">
-              Executor Alpha
-            </h1>
+            <h2 className="font-display text-2xl md:text-3xl font-bold text-on-surface tracking-tight mb-2">
+              Commitment Executor
+            </h2>
             <p className="text-on-surface-variant text-sm max-w-2xl">
               Claim execution tickets and submit their ZK proof bundles without receiving private witness data.
             </p>

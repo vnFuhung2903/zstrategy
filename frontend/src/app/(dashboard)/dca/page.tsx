@@ -276,7 +276,7 @@ export default function DcaPage() {
 
   return (
     <>
-      <Topbar title="DCA Pulse" />
+      <Topbar title="DCA" />
       <div className="p-4 md:p-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 max-w-7xl">
 

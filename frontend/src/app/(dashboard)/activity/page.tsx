@@ -4,7 +4,6 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, EyeOff, Loader2, Search, Shield, WifiOff } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { Card } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { StatusChip } from "@/components/ui/StatusChip";
@@ -72,7 +71,6 @@ export default function ActivityPage() {
           <p className="text-xs text-on-surface-variant flex-1">
             Activity is anonymized. Search uses commitment hashes and transaction hashes only.
           </p>
-          <Badge variant="sovereign" dot className="shrink-0">Ownerless</Badge>
         </div>
 
         {isError && (
