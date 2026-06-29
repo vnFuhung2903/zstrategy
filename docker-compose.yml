@@ -30,22 +30,44 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - ./backend/.env
     ports:
       - "8080:8080"
     environment:
       PORT: "8080"
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/zstrategy?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      RPC_URL: ${RPC_URL:-}
-      CHAIN_ID: ${CHAIN_ID:-421614}
-      COMMITMENT_REGISTRY_ADDRESS: ${COMMITMENT_REGISTRY_ADDRESS:-}
-      ENCLAVE_URL: ${ENCLAVE_URL:-http://host.docker.internal:3002}
+      ENCLAVE_URL: http://enclave:3002
       METRICS_ENABLED: "true"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      enclave:
+        condition: service_healthy
+
+  enclave:
+    build:
+      context: ./enclave
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./enclave/.env
+    ports:
+      - "3002:3002"
+    environment:
+      ENCLAVE_PORT: "3002"
+      ORDER_FILL_CIRCUIT_JSON: /circuits/order_fill/target/order_fill.json
+      DCA_CIRCUIT_JSON: /circuits/dca/target/dca.json
+    volumes:
+      - ./circuits:/circuits:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   # ── Observability stack ─────────────────────────────────────────────────────
   # Prometheus scrapes backend:8080/metrics every 15s.
