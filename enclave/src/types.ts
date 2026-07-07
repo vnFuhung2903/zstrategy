@@ -86,7 +86,6 @@ export interface ExecutionTicket {
   commitmentHash: Hex;
   kind: IntentCircuitKind;
   nullifier: Hex;
-  /** Contract calldata value: "0" for ORDER_FILL, execution timestamp for DCA. */
   fillRef: string;
   proof: Hex;
   ticketExpiresAt: number;

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title IPriceFeed
-/// @notice Minimal Chainlink AggregatorV3-compatible interface.
-///         Only the fields zstrategy needs at fill time.
 interface IPriceFeed {
     function latestRoundData()
         external

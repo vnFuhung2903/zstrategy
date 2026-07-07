@@ -1,11 +1,3 @@
-/**
- * Go backend API client.
- *
- * Intents are registered here after the on-chain commitment confirms. The
- * backend stores public metadata plus an encrypted witness package; plaintext
- * witness fields stay in the browser and then inside the simulated enclave.
- */
-
 import type { EncryptedWitnessPackage } from "./enclaveWitness";
 
 const BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8080";

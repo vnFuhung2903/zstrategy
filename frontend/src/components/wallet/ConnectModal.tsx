@@ -19,12 +19,9 @@ export function ConnectModal({ open, onClose }: ConnectModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Modal */}
       <div className="relative w-full max-w-sm rounded-sm bg-surface-container border border-outline-variant/20 shadow-2xl">
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-outline-variant/10">
           <div className="flex items-center gap-2">
             <Wallet size={16} className="text-primary-container" />
@@ -40,7 +37,6 @@ export function ConnectModal({ open, onClose }: ConnectModalProps) {
         <div className="p-5 space-y-3">
           {isConnected ? (
             <>
-              {/* Connected state */}
               <div className="p-4 rounded-sm bg-surface-container-high border border-outline-variant/10 space-y-3">
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-primary-container shrink-0 shadow-[0_0_6px_rgba(0,240,255,0.6)]" />
@@ -72,7 +68,6 @@ export function ConnectModal({ open, onClose }: ConnectModalProps) {
             </>
           ) : (
             <>
-              {/* Connector list */}
               <p className="text-xs text-on-surface-variant mb-1">Select a wallet to connect to Arbitrum Sepolia</p>
               {connectors.map((connector) => (
                 <button

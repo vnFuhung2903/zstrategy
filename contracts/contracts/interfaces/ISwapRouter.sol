@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @notice Minimal Uniswap v3 SwapRouter interface (exactInputSingle only).
 interface ISwapRouter {
     struct ExactInputSingleParams {
         address tokenIn;

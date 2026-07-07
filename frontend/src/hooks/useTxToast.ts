@@ -1,24 +1,5 @@
 "use client";
 
-/**
- * Wagmi tx → Sonner toast bridge.
- *
- * Mounts once per write hook. Tracks the `hash` produced by wagmi's
- * `useWriteContract` and emits a single sticky toast through its lifecycle:
- *
- *   submit  →  loading toast  (anchored by toast id)
- *   confirm →  success toast with "View on <explorer>" action
- *   revert  →  error toast with shortMessage
- *
- * Errors thrown before the wallet returns a hash (user-rejection, RPC
- * unavailable, simulation revert) are surfaced too — they arrive on `error`
- * with no `hash`, so we still show a transient error toast.
- *
- * Multiple consumers can call this hook with the same `label` safely: each
- * hook instance gets its own toast id so two simultaneous deposits show two
- * separate toasts.
- */
-
 import { useEffect, useRef } from "react";
 import { useChainId } from "wagmi";
 import { toast } from "sonner";
@@ -38,7 +19,6 @@ export function useTxToast({ hash, isConfirming, isSuccess, error, label, succes
   const toastIdRef    = useRef<string | number | null>(null);
   const handledHashRef = useRef<string | undefined>(undefined);
 
-  // Tx hash assigned: wallet accepted, broadcasting → loading toast.
   useEffect(() => {
     if (!hash || hash === handledHashRef.current) return;
     handledHashRef.current = hash;
@@ -47,7 +27,6 @@ export function useTxToast({ hash, isConfirming, isSuccess, error, label, succes
     });
   }, [hash, label]);
 
-  // Confirming on-chain — keep the toast open, refine wording.
   useEffect(() => {
     if (!isConfirming || !toastIdRef.current) return;
     toast.loading(`${label}: confirming`, {
@@ -56,7 +35,6 @@ export function useTxToast({ hash, isConfirming, isSuccess, error, label, succes
     });
   }, [isConfirming, label]);
 
-  // Confirmed — flip to success with explorer link.
   useEffect(() => {
     if (!isSuccess || !hash) return;
     if (!successToastEnabled) {
@@ -76,8 +54,6 @@ export function useTxToast({ hash, isConfirming, isSuccess, error, label, succes
     toastIdRef.current = null;
   }, [isSuccess, hash, chainId, label, successToastEnabled]);
 
-  // Failure — wagmi exposes `shortMessage` on viem-thrown errors which is
-  // much more user-friendly than the full stack-trace message.
   useEffect(() => {
     if (!error) return;
     const short = (error as { shortMessage?: string }).shortMessage ?? error.message ?? "Transaction failed";

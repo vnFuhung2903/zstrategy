@@ -8,13 +8,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// ArbitrumSepoliaChainID is the EVM chain id for Arbitrum Sepolia (the primary
-// thesis testnet). Used as the system-wide fallback when neither the CHAIN_ID
-// env var nor a `?chain_id=` query string provides one.
 const ArbitrumSepoliaChainID int64 = 421614
 
-// DefaultChainID is the chain id used as a fallback. Currently aliased to
-// Arbitrum Sepolia; change here to retarget the default network.
 const DefaultChainID = ArbitrumSepoliaChainID
 
 type Config struct {

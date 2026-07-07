@@ -33,8 +33,6 @@ import {
 import { ADDRESSES } from "@/lib/contracts";
 import { arbitrumSepolia } from "wagmi/chains";
 
-// BUY:  spend quoteToken each round → accumulate baseToken  (classic DCA)
-// SELL: spend baseToken each round  → accumulate quoteToken (reverse DCA / de-risking)
 type Side = "BUY" | "SELL";
 
 const INTERVALS: Record<string, number> = {
@@ -73,14 +71,12 @@ export default function DcaPage() {
     return sharedNonceRef.current;
   }
 
-  // Reset minOut when pair or side changes — output token and decimals differ.
   // useEffect(() => { setMinOutInput(""); }, [pair, side]);
 
   const { data: tokenInBalance } = useFreeBalance(tokenIn.address);
   const { registerBatch, isPending, isConfirming, isSuccess, error } = useRegisterCommitmentBatch();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
 
-  // DCA fires `roundCount` distinct executions over the schedule.
   const parsedRoundCount = Number.parseInt(roundCountInput, 10);
   const roundCount = Number.isInteger(parsedRoundCount) ? parsedRoundCount : 0;
   const roundCountValid = roundCount >= 2 && roundCount <= 10;
@@ -280,18 +276,15 @@ export default function DcaPage() {
       <div className="p-4 md:p-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 max-w-7xl">
 
-          {/* Left — config */}
           <div className="lg:col-span-5">
             <Card className="p-4 md:p-5 space-y-4 md:space-y-5">
               <p className="text-xs font-medium text-primary-container uppercase tracking-widest">DCA Parameters</p>
 
-              {/* Pair selector */}
               <div>
                 <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Asset Pair</p>
                 <TokenPairSelect value={pair} onChange={p => { setPair(p); setSide("BUY"); }} />
               </div>
 
-              {/* Side */}
               <div>
                 <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Direction</p>
                 <div className="flex gap-1.5">
@@ -314,7 +307,6 @@ export default function DcaPage() {
                 </div>
               </div>
 
-              {/* Spend per round */}
               <div>
                 <div className="flex justify-between gap-2 mb-1.5">
                   <label className="text-xs text-on-surface-variant uppercase tracking-widest min-w-0">
@@ -339,7 +331,6 @@ export default function DcaPage() {
                 />
               </div>
 
-              {/* Rounds */}
               <div>
                 <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Number of Rounds (max 10)</p>
                 <Input
@@ -352,7 +343,6 @@ export default function DcaPage() {
                 />
               </div>
 
-              {/* Interval */}
               <div>
                 <p className="text-xs text-on-surface-variant uppercase tracking-widest mb-2">Interval</p>
                 <div className="flex gap-1.5">
@@ -369,7 +359,6 @@ export default function DcaPage() {
                 </div>
               </div>
 
-              {/* Summary */}
               <div className="bg-surface-container-lowest rounded-sm p-3 space-y-2 text-sm">
                 {[
                   { label: "Total Spend",   value: `${parseFloat(fmtUnits(totalSpend, tokenIn.decimals)).toLocaleString("en-US", { maximumFractionDigits: tokenIn.decimals === 18 ? 6 : 2 })} ${tokenIn.name}` },
@@ -386,7 +375,6 @@ export default function DcaPage() {
             </Card>
           </div>
 
-          {/* Right — ZK panel */}
           <div className="lg:col-span-7 space-y-4">
             <Card variant="trust-violet" className="p-4 md:p-5">
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-4">
@@ -412,9 +400,6 @@ export default function DcaPage() {
                 </div>
               )}
 
-              {/* Action — button stays in its ready state across submissions.
-                  Success is announced via the global toast (Sonner) from the
-                  useRegisterCommitmentBatch hook's useTxToast wiring. */}
               <div className="mt-4 md:mt-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 bg-secondary/10">

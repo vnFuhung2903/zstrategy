@@ -87,7 +87,6 @@ export function Sidebar() {
 
   return (
     <>
-      {/* Desktop sidebar */}
       <aside className="hidden md:flex flex-col w-56 shrink-0 bg-surface-container-low h-screen sticky top-0">
         <div className="flex items-center gap-2 px-4 py-5 border-b border-outline-variant/10">
           <Logo />
@@ -95,7 +94,6 @@ export function Sidebar() {
         <NavItems />
       </aside>
 
-      {/* Mobile hamburger button — rendered inside Topbar via prop, but also here as fallback */}
       <button
         onClick={() => setMobileOpen(true)}
         className="md:hidden fixed top-3 left-3 z-40 p-2 rounded-sm bg-surface-container-low text-on-surface-variant hover:bg-surface-container border border-outline-variant/10 transition-colors"
@@ -104,7 +102,6 @@ export function Sidebar() {
         <Menu size={18} />
       </button>
 
-      {/* Mobile drawer backdrop */}
       {mobileOpen && (
         <div
           className="md:hidden fixed inset-0 z-40 bg-background/80 backdrop-blur-sm"
@@ -112,7 +109,6 @@ export function Sidebar() {
         />
       )}
 
-      {/* Mobile drawer */}
       <aside
         className={cn(
           "md:hidden fixed top-0 left-0 z-50 flex flex-col w-64 h-full bg-surface-container-low transition-transform duration-200",

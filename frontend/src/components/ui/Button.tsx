@@ -17,7 +17,6 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           "inline-flex items-center justify-center gap-2 font-sans font-medium transition-all duration-150",
           "disabled:opacity-40 disabled:cursor-not-allowed",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-container/50",
-          // Variants
           variant === "primary" && [
             "bg-primary-container text-on-primary-container rounded-sm",
             "hover:brightness-110 hover:glow-primary active:scale-[0.98]",
@@ -34,7 +33,6 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
             "bg-error-container text-error rounded-sm",
             "hover:brightness-110 active:scale-[0.98]",
           ],
-          // Sizes
           size === "sm" && "px-3 py-1.5 text-sm",
           size === "md" && "px-4 py-2 text-sm",
           size === "lg" && "px-6 py-3 text-base",

@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 import "../interfaces/IPriceFeed.sol";
 
-/// @notice Configurable Chainlink-compatible aggregator for Hardhat tests.
 contract MockChainlinkAggregator is IPriceFeed {
     int256  private _answer;
     uint256 private _updatedAt;

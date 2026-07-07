@@ -18,14 +18,8 @@ type IntentRepository interface {
 	ResetTicket(ctx context.Context, commitmentHash, reason string) (bool, error)
 	ListPending(ctx context.Context) ([]*PendingIntent, error)
 	ListTicketReady(ctx context.Context) ([]*PendingIntent, error)
-	// CountByStatus returns the number of rows in the given status.
 	CountByStatus(ctx context.Context, status IntentStatus) (int64, error)
-	// CountByKindsAndStatuses returns rows for a chain matching any of the
-	// supplied kinds and statuses.
 	CountByKindsAndStatuses(ctx context.Context, chainID int64, kinds []IntentKind, statuses []IntentStatus) (int64, error)
-	// ResetStuckExecuting flips in-flight rows whose updated_at is older than
-	// `olderThan` back to PENDING and returns them so the monitor can resume them.
-	// Pass `0` to reset all in-flight rows regardless of age (use at startup).
 	ResetStuckExecuting(ctx context.Context, olderThan time.Duration) ([]*PendingIntent, error)
 	ResetExpiredTickets(ctx context.Context, now time.Time) ([]*PendingIntent, error)
 }
@@ -35,8 +29,6 @@ type ExecutionRepository interface {
 	UpdateStatus(ctx context.Context, commitmentHash string, status ExecutionStatus, txHash string, blockNumber, gasUsed uint64, executedAt *time.Time) error
 	UpdateKind(ctx context.Context, commitmentHash string, kind IntentKind) error
 	ExistsByHash(ctx context.Context, commitmentHash string) (bool, error)
-	// FindByHash returns nil if no row matches. Used by the metrics path to
-	// attach the original `kind` label to terminal-state counters.
 	FindByHash(ctx context.Context, commitmentHash string) (*ExecutionRecord, error)
 	GetStatistics(ctx context.Context, chainID int64) (*Statistics, error)
 	List(ctx context.Context, chainID int64, filters ExecutionFilters, limit, offset int) ([]*ExecutionRecord, error)

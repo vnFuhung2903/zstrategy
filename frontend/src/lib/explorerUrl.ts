@@ -1,11 +1,3 @@
-/**
- * Block-explorer URL helpers per chain.
- *
- * Returns `null` for chains without a public explorer (e.g. local Hardhat),
- * so callers can omit the "View on explorer" action rather than render a
- * broken link.
- */
-
 import { arbitrumSepolia, baseSepolia, hardhat } from "wagmi/chains";
 
 const TX_PREFIX: Record<number, string | null> = {

@@ -6,18 +6,12 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../interfaces/IDEXAdapter.sol";
 import "../interfaces/ISwapRouter.sol";
 
-/// @title UniswapV3Adapter
-/// @notice Wraps Uniswap v3 SwapRouter to conform to IDEXAdapter.
-///         Sets a one-time max-allowance to the router on first encounter of each token,
-///         saving ~25k gas per subsequent swap. Uses OZ forceApprove to handle non-standard
-///         ERC-20s (e.g., USDT) that revert on non-zero re-approval.
 contract UniswapV3Adapter is IDEXAdapter {
     using SafeERC20 for IERC20;
 
     ISwapRouter public immutable router;
     uint24 public immutable feeTier;
 
-    /// @dev Tokens whose router allowance has already been set to type(uint256).max.
     mapping(address token => bool) private routerApproved;
 
     constructor(address _router, uint24 _feeTier) {
@@ -32,7 +26,6 @@ contract UniswapV3Adapter is IDEXAdapter {
         uint256 minOut,
         address recipient
     ) external override returns (uint256 amountOut) {
-        // Tokens are sent to this contract by CollateralVault.releaseForExecution before swap().
         if (!routerApproved[tokenIn]) {
             IERC20(tokenIn).forceApprove(address(router), type(uint256).max);
             routerApproved[tokenIn] = true;

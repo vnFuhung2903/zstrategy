@@ -9,7 +9,6 @@ export default function SettingsPage() {
     <>
       <Topbar title="Settings" />
       <div className="p-4 md:p-6 space-y-4 md:space-y-5 max-w-3xl">
-        {/* Privacy */}
         <Card variant="trust-violet">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">

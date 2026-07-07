@@ -12,8 +12,6 @@ interface TopbarProps {
   title: string;
 }
 
-// ── Network dropdown ──────────────────────────────────────────────────────────
-
 function NetworkDropdown({ onClose }: { onClose: () => void }) {
   const chains                    = useChains();
   const { chain: activeChain }    = useAccount();
@@ -54,7 +52,6 @@ function NetworkDropdown({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="absolute z-50 right-0 top-full mt-1 w-64 bg-surface-container rounded-sm border border-outline-variant/20 shadow-xl overflow-hidden">
-      {/* Configured chains */}
       <div className="px-3 pt-3 pb-1">
         <p className="text-[10px] text-on-surface-variant uppercase tracking-widest mb-2">Networks</p>
         {chains.map(c => {
@@ -127,8 +124,6 @@ function NetworkDropdown({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ── Topbar ────────────────────────────────────────────────────────────────────
-
 export function Topbar({ title }: TopbarProps) {
   const { address, isConnected, chain } = useAccount();
   const [mounted,      setMounted]      = useState(false);
@@ -141,7 +136,6 @@ export function Topbar({ title }: TopbarProps) {
     queueMicrotask(() => setMounted(true));
   }, []);
 
-  // Close network dropdown on outside click.
   useEffect(() => {
     if (!networkOpen) return;
     function handle(e: MouseEvent) {
@@ -163,7 +157,6 @@ export function Topbar({ title }: TopbarProps) {
         <div className="flex items-center gap-2">
           {showConnectedWallet ? (
             <>
-              {/* Network selector */}
               <div className="relative" ref={networkRef}>
                 <button
                   onClick={() => setNetworkOpen(o => !o)}
@@ -183,7 +176,6 @@ export function Topbar({ title }: TopbarProps) {
                 )}
               </div>
 
-              {/* Address / wallet button */}
               <button
                 onClick={() => setConnectOpen(true)}
                 className="flex items-center gap-2 px-2.5 py-1.5 rounded-sm bg-surface-container border border-outline-variant/20 hover:border-primary-container/30 transition-colors"

@@ -1,16 +1,10 @@
 @import "tailwindcss";
 
-/* Make every clickable <button> show the pointer cursor on hover. Tailwind v4
-   ships without the `cursor: pointer` default that v3 used to bake into its
-   base layer, so without this rule buttons render with the text/I-beam cursor
-   even though they're interactive. The :not(:disabled) carve-out keeps the
-   default (forbidden) cursor on disabled buttons. */
 button:not(:disabled) {
   cursor: pointer;
 }
 
 @theme inline {
-  /* ── Surfaces ── */
   --color-background:               #131314;
   --color-surface:                  #131314;
   --color-surface-dim:              #131314;
@@ -22,7 +16,6 @@ button:not(:disabled) {
   --color-surface-bright:           #3a393a;
   --color-surface-variant:          #353436;
 
-  /* ── Primary — Neon Cyan (public / execution) ── */
   --color-primary:                  #dbfcff;
   --color-primary-container:        #00f0ff;
   --color-on-primary:               #00363a;
@@ -33,7 +26,6 @@ button:not(:disabled) {
   --color-inverse-primary:          #006970;
   --color-surface-tint:             #00dbe9;
 
-  /* ── Secondary — Electric Violet (ZKP / private) ── */
   --color-secondary:                #dfb7ff;
   --color-secondary-container:      #9d05ff;
   --color-on-secondary:             #4b007e;
@@ -43,7 +35,6 @@ button:not(:disabled) {
   --color-on-secondary-fixed:       #2d004f;
   --color-on-secondary-fixed-variant:#6b00b0;
 
-  /* ── Tertiary — Gold (warnings / high-value) ── */
   --color-tertiary:                 #fff5de;
   --color-tertiary-container:       #fed639;
   --color-on-tertiary:              #3b2f00;
@@ -52,36 +43,29 @@ button:not(:disabled) {
   --color-on-tertiary-fixed:        #231b00;
   --color-on-tertiary-fixed-variant:#554500;
 
-  /* ── Text / On-surface ── */
   --color-on-surface:               #e5e2e3;
   --color-on-surface-variant:       #b9cacb;
   --color-on-background:            #e5e2e3;
 
-  /* ── Error ── */
   --color-error:                    #ffb4ab;
   --color-error-container:          #93000a;
   --color-on-error-container:       #ffdad6;
 
-  /* ── Outline ── */
   --color-outline:                  #849495;
   --color-outline-variant:          #3b494b;
 
-  /* ── Inverse ── */
   --color-inverse-surface:          #e5e2e3;
   --color-inverse-on-surface:       #313031;
 
-  /* ── Typography ── */
   --font-display:  "Space Grotesk", sans-serif;
   --font-sans:     "Inter", sans-serif;
   --font-mono:     "JetBrains Mono", monospace;
 
-  /* ── Border radius ── */
   --radius-sm: 0.125rem;
   --radius-md: 0.375rem;
   --radius-lg: 0.75rem;
 }
 
-/* ── Base ── */
 *, *::before, *::after { box-sizing: border-box; }
 
 html { color-scheme: dark; }
@@ -94,12 +78,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ── Tabular numbers for addresses / hashes ── */
 .font-tabular {
   font-feature-settings: "tnum" on, "onum" on;
 }
 
-/* ── Ambient glow utilities ── */
 .glow-primary {
   box-shadow: 0 0 20px 0px rgba(0, 240, 255, 0.12);
 }
@@ -110,7 +92,6 @@ body {
   box-shadow: 0 0 20px 0px rgba(254, 214, 57, 0.12);
 }
 
-/* ── Trust Zone glass ── */
 .trust-zone {
   background: rgba(53, 52, 54, 0.4);
   backdrop-filter: blur(12px);
@@ -133,7 +114,6 @@ body {
   );
 }
 
-/* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--color-surface-container-low); }
 ::-webkit-scrollbar-thumb {

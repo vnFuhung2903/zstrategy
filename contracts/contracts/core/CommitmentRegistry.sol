@@ -11,40 +11,22 @@ import "../interfaces/IDEXAdapter.sol";
 import "../interfaces/IPriceFeed.sol";
 import "./CollateralVault.sol";
 
-/// @title CommitmentRegistry
-/// @notice Trust root of zstrategy. Stores privacy-preserving trading commitments
-///         and executes them against a DEX adapter when a valid ZK proof is provided.
-///
-/// State machine per commitment:
-///   NONE → PENDING → EXECUTED
-///                  → CANCELLED
-///                  → EXPIRED  (via sweepExpired)
 contract CommitmentRegistry is ReentrancyGuard, EIP712 {
     using SafeERC20 for IERC20;
 
-    // ── Enums & Structs ────────────────────────────────────────────────────
-
     enum CommitmentStatus { NONE, PENDING, EXECUTED, CANCELLED, EXPIRED }
 
-    /// @notice Determines which verifier and public-input layout to use at execution.
-    ///         ORDER_FILL (0): reads Chainlink oracle price; verifier = verifiers[0].
-    ///         DCA        (1): uses a freshness-checked execution timestamp; verifier = verifiers[1].
     enum CommitmentKind { ORDER_FILL, DCA }
 
     struct CommitmentRecord {
-        // Slot 0 — packed (20 + 8 + 1 + 1 = 30 bytes ≤ 32)
-        address owner;            // User who registered this commitment
-        uint64 expiry;            // Unix timestamp after which commitment is expired
+        address owner;
+        uint64 expiry;
         CommitmentStatus status;
         CommitmentKind kind;
-        // Slot 1
-        address tokenIn;          // Collateral token (token being sold / spent)
-        // Slot 2
-        address tokenOut;         // Token to receive after swap
-        // Slot 3
-        uint256 size;             // Amount of tokenIn locked in vault
-        // Slot 4
-        uint256 minOut;           // Minimum tokenOut (slippage protection; encrypted pre-execution)
+        address tokenIn;
+        address tokenOut;
+        uint256 size;
+        uint256 minOut;
     }
 
     struct Prover {
@@ -66,12 +48,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         uint256 userAmount;
     }
 
-    // ── State ──────────────────────────────────────────────────────────────
-
-    /// @notice Per-kind verifier registry. Set via setVerifier(); never immutable so
-    ///         new circuit versions can be deployed without redeploying the registry.
-    ///         verifiers[0] = ORDER_FILL (UltraHonk, Chainlink public input)
-    ///         verifiers[1] = DCA        (UltraHonk, execution-timestamp public input)
     mapping(uint8 => IVerifier) public verifiers;
     CollateralVault public vault;
     IDEXAdapter public dexAdapter;
@@ -86,24 +62,14 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
     uint16 public executorFeeBps;
     uint16 public proverFeeBps;
 
-    /// @notice DCA proofs use a keeper-chosen execution timestamp. Settlement
-    ///         must follow soon after so the timestamp remains anchored to the
-    ///         current chain time without requiring exact block prediction.
     uint256 public constant DCA_FILL_REF_MAX_AGE = 5 minutes;
 
-    /// @notice Maximum age of a Chainlink answer accepted at fill time.
-    ///         Defaults to 1 hour; guardian may widen for feeds with longer heartbeat.
     uint256 public oracleStaleness = 1 hours;
 
-    /// @notice Per-token Chainlink USD price feeds. Each token maps to a feed that returns
-    ///         its price denominated in USD. The pair price (tokenIn/tokenOut) is derived
-    ///         on-chain: price = (tokenIn_USD / tokenOut_USD) with tokenOut feed decimals precision.
     mapping(address token => IPriceFeed) public priceFeeds;
     mapping(bytes32 proverId => Prover) public provers;
     mapping(bytes32 => CommitmentRecord) private commitments;
     mapping(bytes32 => bool)             public nullifiers;
-
-    // ── Events ─────────────────────────────────────────────────────────────
 
     event CommitmentRegistered(
         bytes32        indexed commitmentHash,
@@ -146,8 +112,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
     event Paused(address indexed guardian);
     event Unpaused(address indexed guardian);
 
-    // ── Constructor ────────────────────────────────────────────────────────
-
     constructor(
         address _collateral_vault,
         address _dexAdapter,
@@ -162,8 +126,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         guardian   = _guardian;
     }
 
-    // ── Modifiers ──────────────────────────────────────────────────────────
-
     modifier whenNotPaused() {
         require(!paused, "Registry: paused");
         _;
@@ -174,16 +136,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         _;
     }
 
-    // ── Registration ──────────────────────────────────────────────────────
-
-    /// @notice Register a privacy-preserving trading commitment.
-    /// @param commitmentHash  keccak256 of the strategy preimage
-    /// @param tokenIn         Token being sold / collateral token
-    /// @param tokenOut        Token to receive
-    /// @param size            Amount of tokenIn to lock from vault
-    /// @param minOut          Minimum tokenOut accepted at execution (slippage guard)
-    /// @param expiry          Unix timestamp after which commitment can be swept
-    /// @param kind            Verifier dispatch key (ORDER_FILL or DCA)
     function registerCommitment(
         bytes32        commitmentHash,
         address        tokenIn,
@@ -224,8 +176,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         emit CommitmentRegistered(commitmentHash, msg.sender, tokenIn, tokenOut, size, expiry, kind);
     }
 
-    /// @notice Batch-register up to 10 commitments in a single transaction (e.g. for DCA rounds).
-    /// @param kind  Applied to every commitment in the batch (all rounds share the same verifier).
     function registerCommitmentBatch(
         bytes32[]      calldata commitmentHashes,
         address        tokenIn,
@@ -272,18 +222,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         }
     }
 
-    // ── Execution ──────────────────────────────────────────────────────────
-
-    /// @notice Execute a commitment by providing a valid ZK proof.
-    ///         Can be called by the keeper or by the user themselves (self-execution fallback).
-    ///         ORDER_FILL reads the Chainlink pair price on-chain. DCA uses
-    ///         fillRef as the execution timestamp proven by the circuit,
-    ///         then checks that it is recent relative to block.timestamp.
-    /// @param commitmentHash  The commitment to execute.
-    /// @param nullifier       Prevents double-execution (public output of ZK circuit).
-    /// @param proof           Serialised UltraPlonk proof bytes.
-    /// @param fillRef         DCA execution timestamp. Ignored for ORDER_FILL.
-    /// @param receipt         Prover authorization receipt for this execution ticket.
     function executeCommitment(
         bytes32 commitmentHash,
         bytes32 nullifier,
@@ -309,8 +247,7 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
             receipt
         );
 
-        // ── Build public inputs and read fill-time reference value ─────────
-        // Public input layout is identical for both circuits:
+        // Public input:
         //   [0] commitment_hash  [1] fill_ref (oracle price or DCA execution timestamp)
         //   [2] nullifier        [3] token_in   [4] token_out
         //   [5] size             [6] min_out     [7] expiry
@@ -327,9 +264,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
             require(fillRef == 0, "Registry: non-zero fillRef for ORDER_FILL");
             fillRef = _readOraclePrice(c.tokenIn, c.tokenOut);
         } else {
-            // DCA: exact block.timestamp is unknowable before mining. The
-            // proof binds to fillRef, and the registry checks the tx lands
-            // shortly after that proven timestamp.
             require(fillRef <= block.timestamp, "Registry: DCA fillRef in future");
             require(block.timestamp - fillRef <= DCA_FILL_REF_MAX_AGE, "Registry: DCA fillRef stale");
         }
@@ -337,11 +271,9 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
 
         require(kv.verify(proof, publicInputs), "Registry: invalid proof");
 
-        // ── Mark before external calls (CEI pattern) ──────────────────────
         nullifiers[nullifier] = true;
         c.status = CommitmentStatus.EXECUTED;
 
-        // ── Release collateral to DEX adapter and swap ────────────────────
         SettlementAmounts memory amounts = _swapAndDistribute(commitmentHash, c, proverPayout);
 
         emit CommitmentExecuted(commitmentHash, c.owner, msg.sender, nullifier, fillRef, amounts.grossAmountOut, c.kind);
@@ -415,9 +347,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         token.safeTransfer(recipient, amount);
     }
 
-    /// @dev Derive the tokenIn/tokenOut price from two Chainlink USD feeds.
-    ///      price = (tokenIn_USD / tokenOut_USD) expressed with tokenOut feed decimal places.
-    ///      Both feeds are validated for freshness and positivity before use.
     function _readOraclePrice(address tokenIn, address tokenOut) internal view returns (uint64) {
         IPriceFeed feedIn  = priceFeeds[tokenIn];
         IPriceFeed feedOut = priceFeeds[tokenOut];
@@ -429,18 +358,14 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
 
         require(answerIn  > 0, "Registry: invalid tokenIn oracle answer");
         require(answerOut > 0, "Registry: invalid tokenOut oracle answer");
-        // Staleness checks disabled for testnet — Arbitrum Sepolia feeds update infrequently.
-        // Re-enable for mainnet: uncomment the two lines below and remove this comment.
-        // require(updatedAtIn  > 0 && block.timestamp - updatedAtIn  <= oracleStaleness,
-        //         "Registry: stale tokenIn oracle");
-        // require(updatedAtOut > 0 && block.timestamp - updatedAtOut <= oracleStaleness,
-        //         "Registry: stale tokenOut oracle");
+        require(updatedAtIn  > 0 && block.timestamp - updatedAtIn  <= oracleStaleness,
+                "Registry: stale tokenIn oracle");
+        require(updatedAtOut > 0 && block.timestamp - updatedAtOut <= oracleStaleness,
+                "Registry: stale tokenOut oracle");
 
         uint256 dIn  = uint256(feedIn.decimals());
         uint256 dOut = uint256(feedOut.decimals());
 
-        // Normalise both answers to 1e18, then derive the pair price.
-        // Result has dOut decimal places — consistent with what the ZK circuit expects.
         uint256 normIn  = uint256(answerIn)  * 10 ** (18 - dIn);
         uint256 normOut = uint256(answerOut) * 10 ** (18 - dOut);
         uint256 priceU  = normIn * 10 ** dOut / normOut;
@@ -451,12 +376,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         return uint64(priceU);
     }
 
-    // ── Cancellation ──────────────────────────────────────────────────────
-
-    /// @notice Cancel a pending commitment and return collateral to vault free balance.
-    ///         Only the commitment owner may cancel.
-    /// @param commitmentHash  The commitment to cancel.
-    /// @param nullifier       The nullifier for this commitment (prevents replay after cancel).
     function cancelCommitment(bytes32 commitmentHash, bytes32 nullifier) external nonReentrant {
         CommitmentRecord storage c = commitments[commitmentHash];
 
@@ -472,8 +391,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         emit CommitmentCancelled(commitmentHash, msg.sender);
     }
 
-    /// @notice Sweep one or more expired commitments, returning collateral to owners.
-    ///         Callable by anyone — no trust required.
     function sweepExpired(bytes32[] calldata commitmentHashes) external nonReentrant {
         for (uint256 i = 0; i < commitmentHashes.length; i++) {
             bytes32 h = commitmentHashes[i];
@@ -490,8 +407,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         }
     }
 
-    // ── View ───────────────────────────────────────────────────────────────
-
     function getCommitmentStatus(bytes32 commitmentHash)
         external
         view
@@ -507,8 +422,6 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
     {
         return commitments[commitmentHash];
     }
-
-    // ── Admin ──────────────────────────────────────────────────────────────
 
     function pause() external onlyGuardian {
         paused = true;
@@ -564,26 +477,18 @@ contract CommitmentRegistry is ReentrancyGuard, EIP712 {
         guardian = newGuardian;
     }
 
-    /// @notice Configure the Chainlink-compatible USD price feed for a token.
-    ///         Pass the zero address to remove the feed.
     function setPriceFeed(address token, address feed) external onlyGuardian {
         require(token != address(0), "Registry: zero token");
         priceFeeds[token] = IPriceFeed(feed);
         emit PriceFeedSet(token, feed);
     }
 
-    /// @notice Adjust the maximum accepted age of a Chainlink answer.
-    ///         Default is 1 hour; widen for feeds with longer heartbeat.
     function setOracleStaleness(uint256 newValue) external onlyGuardian {
         require(newValue > 0, "Registry: zero staleness");
         emit OracleStalenessSet(oracleStaleness, newValue);
         oracleStaleness = newValue;
     }
 
-    /// @notice Register or update the ZK verifier for a commitment kind.
-    ///         Must be called for CommitmentKind.DCA before any DCA commitments can be registered.
-    /// @param kind     0 = ORDER_FILL, 1 = DCA (cast from CommitmentKind enum)
-    /// @param verifier Address of the deployed IVerifier contract.
     function setVerifier(uint8 kind, address verifier) external onlyGuardian {
         require(verifier != address(0), "Registry: zero verifier");
         verifiers[kind] = IVerifier(verifier);

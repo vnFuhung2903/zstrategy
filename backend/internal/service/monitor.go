@@ -677,11 +677,6 @@ func isHexData(value string) bool {
 	return true
 }
 
-// fetchPairPrice mirrors CommitmentRegistry._readOraclePrice:
-//
-//	normIn  = answerIn  * 10^(18 - dIn)
-//	normOut = answerOut * 10^(18 - dOut)
-//	priceU  = normIn * 10^dOut / normOut   (dOut decimal places)
 func (m *MonitorService) fetchPairPrice(ctx context.Context, tokenIn, tokenOut string) (*big.Int, error) {
 	addrIn := common.HexToAddress(tokenIn)
 	addrOut := common.HexToAddress(tokenOut)

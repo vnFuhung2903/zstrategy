@@ -43,16 +43,8 @@ export function VaultPanel() {
     parseFloat(amount) > 0 &&
     allowance < BigInt(Math.floor(parseFloat(amount) * 10 ** token.decimals));
 
-  // Tx button is "busy" only while a tx is in-flight. Success is communicated
-  // via the global Sonner toast (wired by useTxToast inside each write hook),
-  // so the button stays enabled and ready for the next interaction — the user
-  // doesn't have to dismiss anything to deposit again.
   const busy = approvePending || approveConfirming || depositPending || depositConfirming || withdrawPending || withdrawConfirming;
 
-  // After approve confirms, force an allowance refetch so the button switches
-  // from "Approve" to "Deposit" without waiting up to 5s for the polling
-  // interval. Tracked by tx hash so back-to-back approves each trigger
-  // their own refetch.
   const lastApprovedHashRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!approveSuccess || !approveHash || approveHash === lastApprovedHashRef.current) return;
@@ -99,7 +91,6 @@ export function VaultPanel() {
   return (
     <Card className="p-4 space-y-4">
       <CardContent className="p-0 space-y-4">
-        {/* Token selector */}
         <div className="flex gap-2">
           {TOKEN_OPTIONS.map((t, i) => (
             <button
@@ -117,7 +108,6 @@ export function VaultPanel() {
           ))}
         </div>
 
-        {/* Balances */}
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div className="p-2 rounded-sm bg-surface-container-high">
             <p className="text-on-surface-variant mb-0.5">Wallet</p>
@@ -129,7 +119,6 @@ export function VaultPanel() {
           </div>
         </div>
 
-        {/* Mode toggle */}
         <div className="flex rounded-sm overflow-hidden border border-outline-variant/20">
           {(["deposit", "withdraw"] as Mode[]).map((m) => (
             <button
@@ -148,7 +137,6 @@ export function VaultPanel() {
           ))}
         </div>
 
-        {/* Amount input */}
         <Input
           label={`Amount (${token.label})`}
           type="text"
@@ -162,7 +150,6 @@ export function VaultPanel() {
           onAction={setMaxAmount}
         />
 
-        {/* CTA */}
         <Button
           variant="primary"
           size="sm"

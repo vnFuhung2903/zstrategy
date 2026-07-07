@@ -133,7 +133,6 @@ func (ci *ChainIndexer) handleLog(ctx context.Context, vLog types.Log) {
 	switch vLog.Topics[0] {
 	case ci.parsedABI.Events["CommitmentRegistered"].ID:
 		log.Printf("[indexer] CommitmentRegistered %s", commitmentHash)
-		// Decode non-indexed fields to extract kind (last field, uint8).
 		kind := "ORDER_FILL"
 		decoded := make(map[string]interface{})
 		if err := ci.parsedABI.Events["CommitmentRegistered"].Inputs.UnpackIntoMap(decoded, vLog.Data); err == nil {

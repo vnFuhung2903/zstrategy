@@ -1,16 +1,3 @@
-/**
- * Encrypted intent backup (`.zstrategy` file format).
- *
- * Intent witness data lives in IndexedDB only — clear the browser and it's
- * gone. This lets the user export an AES-GCM encrypted bundle protected by a
- * password they choose, and restore it on another device.
- *
- * Crypto: PBKDF2-SHA256 (250 000 iterations) → 256-bit AES-GCM key.
- *         Salt and IV are random per export and stored alongside the ciphertext.
- *
- * No external deps — uses the browser's built-in Web Crypto API.
- */
-
 import {
   listIntentsForOwner,
   saveIntent,
@@ -28,10 +15,9 @@ interface BackupFile {
   version:    number;
   kdf:        "PBKDF2-SHA256";
   iterations: number;
-  salt:       string;       // base64
-  iv:         string;       // base64
-  ciphertext: string;       // base64
-  /** Owner address recorded on export — surfaced for safety on import. */
+  salt:       string;
+  iv:         string;
+  ciphertext: string;
   owner:      `0x${string}`;
 }
 
@@ -73,10 +59,6 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
   );
 }
 
-/**
- * Read all intents for `owner` from IndexedDB, encrypt with `password`,
- * and trigger a browser download of the resulting `.zstrategy` file.
- */
 export async function exportIntents(
   owner: `0x${string}`,
   password: string,
@@ -121,11 +103,6 @@ export async function exportIntents(
   return { count: intents.length, filename };
 }
 
-/**
- * Decrypt a `.zstrategy` file with `password` and merge its intents into
- * IndexedDB. Returns counts. Existing rows with the same `commitmentHash` are
- * overwritten — IndexedDB `put` semantics.
- */
 export async function importIntents(
   fileText: string,
   password: string,

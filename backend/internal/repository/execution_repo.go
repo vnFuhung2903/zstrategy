@@ -116,9 +116,6 @@ func (r *ExecutionRepo) GetStatistics(ctx context.Context, chainID int64) (*doma
 		ByKind:  make(map[string]*domain.KindBreakdown),
 	}
 
-	// Aggregate latency and gas across (status=executed, kind=*) rows. Each row
-	// already holds a per-group average; we weight by Count to get the overall
-	// mean so multi-kind systems don't have one kind silently overwrite another.
 	var weightedLatency, weightedGas float64
 	var latencyN, gasN int64
 

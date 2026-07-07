@@ -6,28 +6,13 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-/// @title CollateralVault
-/// @notice Holds user collateral for zstrategy commitments.
-///         Only the CommitmentRegistry may move locked funds.
-///
-/// Flow:
-///   user.deposit()        → free balance increases
-///   registry.lock()       → free → locked (per commitment)
-///   registry.release()    → locked transferred to DEX adapter for swap
-///   registry.return()     → locked returned to free (on cancel / expiry)
 contract CollateralVault is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
-    // ── State ──────────────────────────────────────────────────────────────
-
     address public registry;
-    /// @notice Free (unlocked) balance per user per token.
     mapping(address user => mapping(address token => uint256)) public freeBalance;
 
-    /// @notice Locked balance per commitment per token.
     mapping(bytes32 commitmentHash => mapping(address token => uint256)) public lockedBalance;
-
-    // ── Events ─────────────────────────────────────────────────────────────
 
     event Deposited(address indexed user, address indexed token, uint256 amount);
     event Withdrawn(address indexed user, address indexed token, uint256 amount);
@@ -36,27 +21,19 @@ contract CollateralVault is ReentrancyGuard, Ownable {
     event CollateralReturned(bytes32 indexed commitmentHash, address indexed user, address indexed token, uint256 amount);
     event RegistryChanged(address indexed oldRegistry, address indexed newRegistry);
 
-    // ── Constructor ────────────────────────────────────────────────────────
-
     constructor() Ownable(msg.sender) {}
 
-    /// @notice Set or update the registry allowed to move locked collateral.
     function setRegistry(address _registry) external onlyOwner {
         require(_registry != address(0), "Vault: zero registry");
         emit RegistryChanged(registry, _registry);
         registry = _registry;
     }
 
-    // ── Modifiers ──────────────────────────────────────────────────────────
-
     modifier onlyRegistry() {
         require(msg.sender == registry, "Vault: caller not registry");
         _;
     }
 
-    // ── User-facing functions ──────────────────────────────────────────────
-
-    /// @notice Deposit ERC-20 tokens into the vault.
     function deposit(address token, uint256 amount) external nonReentrant {
         require(amount > 0, "Vault: zero amount");
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -64,7 +41,6 @@ contract CollateralVault is ReentrancyGuard, Ownable {
         emit Deposited(msg.sender, token, amount);
     }
 
-    /// @notice Withdraw free (unlocked) tokens from the vault.
     function withdraw(address token, uint256 amount) external nonReentrant {
         require(amount > 0, "Vault: zero amount");
         require(freeBalance[msg.sender][token] >= amount, "Vault: insufficient free balance");
@@ -73,10 +49,6 @@ contract CollateralVault is ReentrancyGuard, Ownable {
         emit Withdrawn(msg.sender, token, amount);
     }
 
-    // ── Registry-only functions ────────────────────────────────────────────
-
-    /// @notice Lock `amount` of `token` from `user`'s free balance under `commitmentHash`.
-    ///         Called by registry during registerCommitment.
     function lockCollateral(
         bytes32 commitmentHash,
         address user,
@@ -89,8 +61,6 @@ contract CollateralVault is ReentrancyGuard, Ownable {
         emit CollateralLocked(commitmentHash, token, amount);
     }
 
-    /// @notice Transfer locked collateral to `to` (the DEX adapter) for execution.
-    ///         Called by registry during executeCommitment.
     function releaseForExecution(
         bytes32 commitmentHash,
         address token,
@@ -103,8 +73,6 @@ contract CollateralVault is ReentrancyGuard, Ownable {
         emit CollateralReleased(commitmentHash, token, amount, to);
     }
 
-    /// @notice Return locked collateral back to `user`'s free balance.
-    ///         Called by registry on cancelCommitment or sweepExpired.
     function returnCollateral(
         bytes32 commitmentHash,
         address user,

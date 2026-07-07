@@ -51,17 +51,6 @@ export function useTokenAllowance(token: `0x${string}`) {
   });
 }
 
-// Token approval is split from useDeposit so the two have independent tx
-// state. Sharing one `useWriteContract` meant `isSuccess` flipped true after
-// approve, which made VaultPanel's "Transaction confirmed!" block hide the
-// follow-up Deposit button — the user got stuck with no way to actually
-// deposit. With separate hooks the consumer can chain them explicitly:
-// observe `useApproveToken().isSuccess`, refetch allowance, then let the
-// user click Deposit.
-//
-// We approve `maxUint256` so the first approval covers any future deposit of
-// the same token — `useTokenAllowance` then reports `needsApproval = false`
-// on subsequent deposits and the consumer skips the approve step entirely.
 export function useApproveToken() {
   const vault = useVaultAddress();
   const { writeContract, data: hash, isPending, error } = useWriteContract();

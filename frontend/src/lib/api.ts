@@ -98,13 +98,6 @@ export interface ExecutorTicketEnvelope {
   ticket:          ExecutionTicket;
 }
 
-// Two response envelope shapes the backend uses:
-//   1. ok(c, data)            → {"data": <data>}                  // stats
-//   2. raw with metadata      → {"data": [...], "limit": N, ...}  // paginated executions
-// Each endpoint method below knows its own shape — no heuristic unwrap, since
-// /executions and ok() both have a top-level "data" key with different
-// semantics (collapsed vs. envelope).
-
 async function requestJson(path: string, init: RequestInit = {}): Promise<unknown> {
   const res = await fetch(`${BASE}${path}`, { cache: "no-store", ...init });
   if (!res.ok) throw new Error(await apiErrorMessage(res, path));

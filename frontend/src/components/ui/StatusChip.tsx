@@ -1,8 +1,5 @@
 import { cn } from "@/lib/utils";
 
-// Matches the backend `domain.ExecutionStatus` enum (registered / executed /
-// cancelled / expired). The UI label for "registered" is "Pending" since
-// that's the conventional user-facing term for "on-chain but not filled".
 type Status = "registered" | "executed" | "cancelled" | "expired";
 
 const statusConfig: Record<Status, { label: string; dotClass: string }> = {

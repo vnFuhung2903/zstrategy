@@ -26,7 +26,6 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	// ── Database ──────────────────────────────────────────────────────────────
 	log.Println("[main] running database migrations...")
 	if err := infrastructure.RunMigrations(infrastructure.MigrationsFS, cfg.DatabaseURL); err != nil {
 		log.Fatalf("migrate: %v", err)
@@ -37,7 +36,6 @@ func main() {
 		log.Fatalf("open db: %v", err)
 	}
 
-	// ── Redis ─────────────────────────────────────────────────────────────────
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
 		log.Fatalf("parse redis url: %v", err)
@@ -49,7 +47,6 @@ func main() {
 	}
 	pingCancel()
 
-	// ── Dependency wiring ─────────────────────────────────────────────────────
 	execRepo := repository.NewExecutionRepo(db)
 	intentRepo := repository.NewIntentRepo(db)
 	indexerSvc := service.NewIndexerService(execRepo, intentRepo)
@@ -57,7 +54,6 @@ func main() {
 	enclaveClient := service.NewHTTPEnclaveClient(cfg.EnclaveURL, cfg.EnclaveAPISecret)
 	indexerSvc.Enclave = enclaveClient
 
-	// ── Ethereum client (shared between indexer and monitor) ──────────────────
 	var ethClient *ethclient.Client
 	if cfg.RPCURL != "" {
 		ethClient, err = ethclient.Dial(cfg.RPCURL)
@@ -67,19 +63,15 @@ func main() {
 		}
 	}
 
-	// ── Monitor service ───────────────────────────────────────────────────────
 	monitorSvc := service.NewMonitorService(intentRepo, ethClient, cfg.CommitmentRegistryAddress, enclaveClient)
 	indexerSvc.Monitor = monitorSvc
 
-	// ── Root context ──────────────────────────────────────────────────────────
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
 
-	// Rehydrate pending intents on startup; reset orphaned EXECUTING rows.
 	monitorSvc.RehydrateFromDB(rootCtx)
 	monitorSvc.StartStuckSweeper(rootCtx)
 
-	// ── Chain indexer (background goroutine) ──────────────────────────────────
 	if cfg.RPCURL != "" && cfg.CommitmentRegistryAddress != "" {
 		ci, err := indexer.New(cfg.RPCURL, cfg.CommitmentRegistryAddress, cfg.ChainID, indexerSvc)
 		if err != nil {
@@ -92,7 +84,6 @@ func main() {
 		log.Println("[main] RPC_URL or COMMITMENT_REGISTRY_ADDRESS not set — chain indexer disabled")
 	}
 
-	// ── HTTP server ───────────────────────────────────────────────────────────
 	h := handler.NewHandler(statsSvc, indexerSvc, intentRepo, monitorSvc, enclaveClient, cfg.CommitmentRegistryAddress)
 	router := handler.NewRouter(h, cfg.MetricsEnabled)
 
@@ -111,7 +102,6 @@ func main() {
 		}
 	}()
 
-	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

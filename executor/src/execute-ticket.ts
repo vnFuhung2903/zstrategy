@@ -1,11 +1,3 @@
-/**
- * Claim one v2 execution ticket from the Go backend and submit it on-chain.
- *
- * The executor wallet never receives witness data. It only receives public
- * metadata plus an already-generated proof bundle, then calls
- * CommitmentRegistry.executeCommitment.
- */
-
 import "dotenv/config";
 import { ethers } from "ethers";
 

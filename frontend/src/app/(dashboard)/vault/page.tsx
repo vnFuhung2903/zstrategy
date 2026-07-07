@@ -11,7 +11,6 @@ export default function VaultPage() {
       <Topbar title="Collateral Vault" />
       <div className="p-4 md:p-6 space-y-4 max-w-7xl">
 
-        {/* Hero */}
         <Card className="relative overflow-hidden p-4 md:p-6">
           <div className="absolute top-0 right-0 w-64 h-64 bg-secondary-container/10 blur-3xl rounded-full -translate-y-1/2 translate-x-1/2 pointer-events-none" />
           <div className="flex items-start justify-between gap-4">
@@ -24,7 +23,6 @@ export default function VaultPage() {
                 All collateral is locked in non-custodial smart contracts. Only proofs can authorize fund movement.
               </p>
             </div>
-            {/* Animated lock */}
             <div className="relative w-20 h-20 md:w-28 md:h-28 hidden sm:flex items-center justify-center shrink-0">
               <div className="absolute inset-0 rounded-full border border-primary-container/20 animate-spin" style={{ animationDuration: "20s" }} />
               <div className="absolute inset-2 rounded-full border border-dashed border-secondary/20 animate-spin" style={{ animationDuration: "15s", animationDirection: "reverse" }} />

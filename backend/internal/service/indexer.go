@@ -142,10 +142,6 @@ func (s *IndexerService) HandleExpired(ctx context.Context, commitmentHash strin
 	return s.repo.UpdateStatus(ctx, commitmentHash, domain.StatusExpired, "", blockNumber, 0, nil)
 }
 
-// lookupKindLabel returns the user-facing intent kind for an existing record so the
-// terminal-event metric carries the same kind label as the register event.
-// On miss (no row yet) we fall back to "LIMIT"; the metric is best-effort,
-// not authoritative.
 func (s *IndexerService) lookupKindLabel(ctx context.Context, commitmentHash string) string {
 	rec, err := s.repo.FindByHash(ctx, commitmentHash)
 	if err != nil || rec == nil {

@@ -1,24 +1,3 @@
-// DCA (Dollar-Cost Averaging) circuit
-//
-// Proves that:
-//   1. The commitment_hash binds to the on-chain registration fields
-//      (token_in, token_out, size, min_out, expiry) AND the private
-//      schedule params (scheduled_lo, scheduled_hi, nonce, user_secret).
-//   2. The time fill condition is satisfied: the keeper-proven execution
-//      timestamp falls within the private execution window [scheduled_lo, scheduled_hi].
-//   3. The commitment has not expired: execution_timestamp < expiry.
-//   4. The nullifier is correctly derived from (user_secret, nonce).
-//
-// Preimage layout (192 bytes, packed big-endian):
-//
-//   token_in(20) || token_out(20) || size(32) || min_out(32) ||
-//   scheduled_lo(8) || scheduled_hi(8) || expiry(8) ||
-//   nonce(32) || user_secret(32)
-//
-// Privacy model:
-//   scheduled_lo and scheduled_hi are private, an observer sees only that
-//   a DCA round executed, not when it was scheduled or what the interval is.
-
 use keccak256::keccak256;
 
 fn u64_to_bytes_be(v: u64) -> [u8; 8] {
@@ -77,23 +56,14 @@ fn compute_commitment(
 
     let mut preimage: [u8; 192] = [0; 192];
 
-    // token_in (bytes 0..20)
     for i in 0..20 { preimage[i] = token_in_bytes[i]; }
-    // token_out (bytes 20..40)
     for i in 0..20 { preimage[20 + i] = token_out_bytes[i]; }
-    // size (bytes 40..72)
     for i in 0..32 { preimage[40 + i] = size_bytes[i]; }
-    // min_out (bytes 72..104)
     for i in 0..32 { preimage[72 + i] = min_out_bytes[i]; }
-    // scheduled_lo (bytes 104..112)
     for i in 0..8  { preimage[104 + i] = scheduled_lo_bytes[i]; }
-    // scheduled_hi (bytes 112..120)
     for i in 0..8  { preimage[112 + i] = scheduled_hi_bytes[i]; }
-    // expiry (bytes 120..128)
     for i in 0..8  { preimage[120 + i] = expiry_bytes[i]; }
-    // nonce (bytes 128..160)
     for i in 0..32 { preimage[128 + i] = nonce_bytes[i]; }
-    // user_secret (bytes 160..192)
     for i in 0..32 { preimage[160 + i] = secret_bytes[i]; }
 
     let hash_bytes = keccak256(preimage, 192);
@@ -133,7 +103,6 @@ fn main(
     assert_address_field(token_in);
     assert_address_field(token_out);
 
-    // 1. Commitment preimage check
     let computed_commitment = compute_commitment(
         token_in, token_out, size, min_out,
         scheduled_lo, scheduled_hi, expiry,
@@ -141,16 +110,11 @@ fn main(
     );
     assert(computed_commitment == commitment_hash, "commitment mismatch");
 
-    // 2. Time fill condition: execution_timestamp falls within the private window.
-    // The registry separately checks this timestamp is recent relative to the
-    // mined block timestamp, so the proof does not need to predict block time exactly.
     assert(execution_timestamp >= scheduled_lo, "too early: before scheduled window");
     assert(execution_timestamp <= scheduled_hi, "too late: after scheduled window");
 
-    // 3. Not expired
     assert(execution_timestamp < expiry, "commitment expired");
 
-    // 4. Nullifier derivation
     let computed_nullifier = compute_nullifier(user_secret, nonce);
     assert(computed_nullifier == nullifier, "nullifier mismatch");
 }
@@ -162,10 +126,10 @@ global USDC: Field = 0x000000000000000000000000aabbccddeeff00112233445566778899a
 fn test_fill_at_window_start() {
     let token_in: Field  = USDC;
     let token_out: Field = WETH;
-    let size: Field      = 3_000_000000;        // 3000 USDC
-    let min_out: Field   = 999_000_000_000_000; // ~0.999 WETH
+    let size: Field      = 3_000_000000;
+    let min_out: Field   = 999_000_000_000_000;
     let scheduled_lo: u64 = 1_700_000_000;
-    let scheduled_hi: u64 = 1_700_000_000 + 3600; // 1-hour window
+    let scheduled_hi: u64 = 1_700_000_000 + 3600;
     let expiry: u64       = 1_700_000_000 + 86400;
     let nonce: Field      = 0x1234;
     let user_secret: Field = 0xdeadbeef;
@@ -177,7 +141,6 @@ fn test_fill_at_window_start() {
     );
     let null = compute_nullifier(user_secret, nonce);
 
-    // Execute exactly at window open
     main(
         scheduled_lo, scheduled_hi, nonce, user_secret,
         commitment, scheduled_lo, null,
@@ -204,7 +167,6 @@ fn test_fill_mid_window() {
     );
     let null = compute_nullifier(user_secret, nonce);
 
-    // Execute in the middle of the window
     main(
         scheduled_lo, scheduled_hi, nonce, user_secret,
         commitment, scheduled_lo + 1800, null,
@@ -231,7 +193,6 @@ fn test_fill_at_window_end() {
     );
     let null = compute_nullifier(user_secret, nonce);
 
-    // Execute exactly at window close
     main(
         scheduled_lo, scheduled_hi, nonce, user_secret,
         commitment, scheduled_hi, null,
@@ -310,7 +271,6 @@ fn test_fill_after_expiry_fails() {
     );
     let null = compute_nullifier(user_secret, nonce);
 
-    // execution_timestamp is within the window but past expiry
     main(
         scheduled_lo, scheduled_hi, nonce, user_secret,
         commitment, scheduled_lo, null,

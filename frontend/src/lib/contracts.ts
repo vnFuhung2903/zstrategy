@@ -1,6 +1,5 @@
 import { arbitrumSepolia } from "wagmi/chains";
 
-// ── Deployed addresses (override via env) ─────────────────────────────────────
 export const ADDRESSES = {
   [arbitrumSepolia.id]: {
     commitmentRegistry: (process.env.NEXT_PUBLIC_COMMITMENT_REGISTRY_ADDRESS ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
@@ -8,7 +7,6 @@ export const ADDRESSES = {
   },
 } as const;
 
-// ── Known tokens on Arbitrum Sepolia ─────────────────────────────────────────
 export const TOKENS = {
   WETH:  (process.env.NEXT_PUBLIC_WETH_ADDRESS ?? "0x980B62Da83eFf3D4576C647993b0c1D7faf17c73") as `0x${string}`,
   USDC:  (process.env.NEXT_PUBLIC_USDC_ADDRESS ?? "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d") as `0x${string}`,
@@ -16,7 +14,6 @@ export const TOKENS = {
   WBTC:  (process.env.NEXT_PUBLIC_WBTC_ADDRESS  ?? "0x7f6A192d690BF5A4762485f3DdD8D8b65cfF627e") as `0x${string}`,
 } as const;
 
-// ── ABIs (minimal — only user-facing functions) ───────────────────────────────
 export const COMMITMENT_REGISTRY_ABI = [
   {
     type: "function",
@@ -182,8 +179,6 @@ export const COLLATERAL_VAULT_ABI = [
   },
 ] as const;
 
-// Minimal Chainlink AggregatorV3Interface — only the calls the self-execute
-// flow needs (latestRoundData for proof gen, decimals for sanity).
 export const PRICE_FEED_ABI = [
   {
     type: "function",

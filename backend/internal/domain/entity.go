@@ -116,8 +116,6 @@ type ProverReceipt struct {
 	Signature       string `json:"signature"`
 }
 
-// ExecutionRecord is an anonymized on-chain event record.
-// No plaintext intent witness fields are stored in execution records.
 type ExecutionRecord struct {
 	ID             uint            `gorm:"primaryKey;autoIncrement"                                  json:"id"`
 	CommitmentHash string          `gorm:"uniqueIndex;size:66;not null"                              json:"commitment_hash"`
