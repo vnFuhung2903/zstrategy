@@ -1,25 +1,3 @@
-/**
- * Redeploy CommitmentRegistry and optionally redeploy its vault dependencies.
- *
- * Run with:
- *   npx hardhat run scripts/redeploy-registry.ts --network arbitrumSepolia
- *
- * Default behavior:
- *   - reuse OrderFillVerifier, DCAVerifier, and DEX adapter
- *   - deploy a fresh CollateralVault
- *   - deploy a fresh GasVault
- *   - deploy a fresh CommitmentRegistry
- *   - point both vaults at the new registry
- *   - set verifiers and price feeds on the new registry
- *
- * Selectively skip vault redeploys with:
- *   SKIP_COLLATERAL_VAULT=1  reuse COLLATERAL_VAULT_ADDRESS / artifact collateralVault
- *   SKIP_GAS_VAULT=1         reuse GAS_VAULT_ADDRESS / artifact gasVault
- *
- * Reused vaults must have owner-rewireable setRegistry(). Older one-time
- * vault bytecode cannot be reused with a newly deployed registry.
- */
-
 import { ethers, network } from "hardhat";
 import * as fs from "fs";
 import * as path from "path";
@@ -31,11 +9,16 @@ interface Deployment {
   chainId: number;
   deployer: string;
   guardian: string;
+  prover?: string;
+  proverId?: string;
+  proverPayout?: string;
+  proverSigner?: string;
+  executorFeeBps?: number;
+  proverFeeBps?: number;
   orderFillVerifier: string;
   dcaVerifier: string;
   collateralVault: string;
   commitmentRegistry: string;
-  gasVault: string;
   dexAdapter: string;
   deployedAt: string;
   priceFeeds?: Record<string, { token: string; feed: string }>;
@@ -52,6 +35,14 @@ type PriceFeedConfig = {
   symbol: string;
   token: string;
   feed: string;
+};
+
+type ProverConfig = {
+  proverId: string;
+  payout: string;
+  signer: string;
+  executorFeeBps: number;
+  proverFeeBps: number;
 };
 
 const PRICE_FEEDS: PriceFeedSpec[] = [
@@ -97,14 +88,103 @@ function requireAddress(label: string, value: string | undefined): string {
   return value;
 }
 
+function optionalAddress(
+  label: string,
+  value: string | undefined
+): string | undefined {
+  if (!value) return undefined;
+  if (!ethers.isAddress(value)) {
+    throw new Error(`${label} must be a valid address when set`);
+  }
+  return value;
+}
+
+function requireBytes32(label: string, value: string | undefined): string {
+  if (!value || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+    throw new Error(
+      `${label} is required and must be a 0x-prefixed bytes32 hex value`
+    );
+  }
+  return value;
+}
+
+function parseFeeBps(
+  label: string,
+  value: string | undefined,
+  fallback: number
+): number {
+  const raw = value ?? String(fallback);
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${label} must be an integer basis-point value`);
+  }
+  const parsed = Number(raw);
+  if (parsed > 500) {
+    throw new Error(`${label} must be <= 500 bps`);
+  }
+  return parsed;
+}
+
+function proverSignerAddress(previous?: Deployment): string {
+  const explicit = optionalAddress(
+    "PROVER_SIGNER_ADDRESS",
+    process.env.PROVER_SIGNER_ADDRESS ?? previous?.proverSigner
+  );
+  if (explicit) return explicit;
+
+  const privateKey = process.env.PROVER_SIGNING_PRIVATE_KEY;
+  if (!privateKey) {
+    throw new Error(
+      "PROVER_SIGNING_PRIVATE_KEY or PROVER_SIGNER_ADDRESS is required"
+    );
+  }
+  return new ethers.Wallet(privateKey).address;
+}
+
+function loadProverConfig(
+  previous: Deployment,
+  defaultPayout: string
+): ProverConfig {
+  const executorFeeBps = parseFeeBps(
+    "EXECUTOR_FEE_BPS",
+    process.env.EXECUTOR_FEE_BPS,
+    previous.executorFeeBps ?? 100
+  );
+  const proverFeeBps = parseFeeBps(
+    "PROVER_FEE_BPS",
+    process.env.PROVER_FEE_BPS,
+    previous.proverFeeBps ?? 100
+  );
+  if (executorFeeBps + proverFeeBps > 1000) {
+    throw new Error("EXECUTOR_FEE_BPS + PROVER_FEE_BPS must be <= 1000 bps");
+  }
+
+  return {
+    proverId: requireBytes32(
+      "PROVER_ID",
+      process.env.PROVER_ID ?? previous.proverId
+    ),
+    payout: requireAddress(
+      "PROVER_PAYOUT_ADDRESS, PROVER_ADDRESS, previous prover payout, or default deployer",
+      process.env.PROVER_PAYOUT_ADDRESS ??
+        process.env.PROVER_ADDRESS ??
+        previous.proverPayout ??
+        previous.prover ??
+        defaultPayout
+    ),
+    signer: proverSignerAddress(previous),
+    executorFeeBps,
+    proverFeeBps,
+  };
+}
+
 function addressFromEnvOrDeployment(
   envName: string,
   deploymentKey: keyof Deployment,
-  previous: Deployment,
+  previous: Deployment
 ): string {
   return requireAddress(
     `${envName} or deployments.${String(deploymentKey)}`,
-    process.env[envName] ?? (previous[deploymentKey] as string | undefined),
+    process.env[envName] ?? (previous[deploymentKey] as string | undefined)
   );
 }
 
@@ -119,7 +199,9 @@ function collectPriceFeeds(previous: Deployment): PriceFeedConfig[] {
 
     if (!token && !feed && !spec.required) continue;
     if (!token || !feed) {
-      throw new Error(`${spec.symbol} requires both ${spec.tokenEnv} and ${spec.feedEnv}`);
+      throw new Error(
+        `${spec.symbol} requires both ${spec.tokenEnv} and ${spec.feedEnv}`
+      );
     }
 
     configs.push({
@@ -132,21 +214,20 @@ function collectPriceFeeds(previous: Deployment): PriceFeedConfig[] {
   return configs;
 }
 
-function deploymentPriceFeedMap(configs: PriceFeedConfig[]) {
-  return configs.reduce<Record<string, { token: string; feed: string }>>((acc, config) => {
-    acc[config.symbol] = { token: config.token, feed: config.feed };
-    return acc;
-  }, {});
-}
-
-async function deployVault(label: "CollateralVault" | "GasVault"): Promise<string> {
+async function deployVault(
+  label: "CollateralVault"
+): Promise<string> {
   const Factory = await ethers.getContractFactory(label);
   const vault = await Factory.deploy();
   await vault.waitForDeployment();
   return vault.getAddress();
 }
 
-async function setVaultRegistry(label: string, address: string, newRegistry: string) {
+async function setVaultRegistry(
+  label: string,
+  address: string,
+  newRegistry: string
+) {
   const [deployer] = await ethers.getSigners();
   const contract = new ethers.Contract(address, REGISTRY_OWNED_ABI, deployer);
   const current = await contract.registry();
@@ -160,7 +241,12 @@ async function setVaultRegistry(label: string, address: string, newRegistry: str
   console.log(`  ${label.padEnd(22)} setRegistry ${current} -> ${newRegistry}`);
 }
 
-async function setVerifierIfNeeded(registry: any, kind: number, verifier: string, label: string) {
+async function setVerifierIfNeeded(
+  registry: any,
+  kind: number,
+  verifier: string,
+  label: string
+) {
   const current = await registry.verifiers(kind);
   if (current.toLowerCase() === verifier.toLowerCase()) {
     console.log(`  ${label.padEnd(22)} already configured`);
@@ -174,12 +260,61 @@ async function setVerifierIfNeeded(registry: any, kind: number, verifier: string
 async function setPriceFeedIfNeeded(registry: any, config: PriceFeedConfig) {
   const current = await registry.priceFeeds(config.token);
   if (current.toLowerCase() === config.feed.toLowerCase()) {
-    console.log(`  ${`${config.symbol} price feed`.padEnd(22)} already configured`);
+    console.log(
+      `  ${`${config.symbol} price feed`.padEnd(22)} already configured`
+    );
     return;
   }
 
   await (await registry.setPriceFeed(config.token, config.feed)).wait();
   console.log(`  ${`${config.symbol} price feed`.padEnd(22)} ${config.feed}`);
+}
+
+async function setProverIfNeeded(registry: any, config: ProverConfig) {
+  const current = await registry.provers(config.proverId);
+  if (
+    current.payout.toLowerCase() === config.payout.toLowerCase() &&
+    current.signer.toLowerCase() === config.signer.toLowerCase() &&
+    current.active
+  ) {
+    console.log(`  ${"Prover".padEnd(22)} already configured`);
+    return;
+  }
+
+  await (
+    await registry.setProver(
+      config.proverId,
+      config.payout,
+      config.signer,
+      true
+    )
+  ).wait();
+  console.log(
+    `  ${"Prover".padEnd(22)} signer=${config.signer} payout=${config.payout}`
+  );
+}
+
+async function setFeeRatesIfNeeded(
+  registry: any,
+  executorFeeBps: number,
+  proverFeeBps: number
+) {
+  const currentExecutorFeeBps = Number(await registry.executorFeeBps());
+  const currentProverFeeBps = Number(await registry.proverFeeBps());
+  if (
+    currentExecutorFeeBps === executorFeeBps &&
+    currentProverFeeBps === proverFeeBps
+  ) {
+    console.log(`  ${"Fee rates".padEnd(22)} already configured`);
+    return;
+  }
+
+  await (await registry.setFeeRates(executorFeeBps, proverFeeBps)).wait();
+  console.log(
+    `  ${"Fee rates".padEnd(
+      22
+    )} executor=${executorFeeBps}/10000 prover=${proverFeeBps}/10000`
+  );
 }
 
 async function main() {
@@ -190,46 +325,55 @@ async function main() {
   if (!fs.existsSync(file)) {
     throw new Error(
       `No deployment found at ${file}. ` +
-        "Run scripts/deploy.ts first, or copy an existing artifact into deployments/.",
+        "Run scripts/deploy.ts first, or copy an existing artifact into deployments/."
     );
   }
 
   const previous = JSON.parse(fs.readFileSync(file, "utf8")) as Deployment;
   if (previous.chainId !== chainId) {
     throw new Error(
-      `Network mismatch: artifact chainId=${previous.chainId}, connected chainId=${chainId}`,
+      `Network mismatch: artifact chainId=${previous.chainId}, connected chainId=${chainId}`
     );
   }
 
   const guardian = requireAddress(
     "GUARDIAN_ADDRESS",
-    process.env.GUARDIAN_ADDRESS ?? previous.guardian ?? deployer.address,
+    process.env.GUARDIAN_ADDRESS ?? previous.guardian ?? deployer.address
   );
   if (guardian.toLowerCase() !== deployer.address.toLowerCase()) {
     throw new Error(
       `Deployer (${deployer.address}) is not the registry guardian (${guardian}). ` +
-        "Switch signers or rotate the guardian first.",
+        "Switch signers or rotate the guardian first."
     );
   }
 
-  const skipCollateralVault = process.env.SKIP_COLLATERAL_VAULT === "1";
-  const skipGasVault = process.env.SKIP_GAS_VAULT === "1";
+  const skipCollateralVault = true;
 
   const orderFillVerifier = addressFromEnvOrDeployment(
     "ORDER_FILL_VERIFIER_ADDRESS",
     "orderFillVerifier",
-    previous,
+    previous
   );
-  const dcaVerifier = addressFromEnvOrDeployment("DCA_VERIFIER_ADDRESS", "dcaVerifier", previous);
-  const dexAdapter = addressFromEnvOrDeployment("DEX_ADAPTER_ADDRESS", "dexAdapter", previous);
+  const dcaVerifier = addressFromEnvOrDeployment(
+    "DCA_VERIFIER_ADDRESS",
+    "dcaVerifier",
+    previous
+  );
+  const dexAdapter = addressFromEnvOrDeployment(
+    "DEX_ADAPTER_ADDRESS",
+    "dexAdapter",
+    previous
+  );
   const priceFeeds = collectPriceFeeds(previous);
+  const prover = loadProverConfig(previous, deployer.address);
 
-  console.log(`\nzstrategy registry redeploy -> ${network.name} (chainId=${chainId})`);
+  console.log(
+    `\nzstrategy registry redeploy -> ${network.name} (chainId=${chainId})`
+  );
   console.log(`Deployer: ${deployer.address}`);
   console.log(`Guardian: ${guardian}\n`);
   console.log(`Existing registry:        ${previous.commitmentRegistry}`);
   console.log(`Existing CollateralVault: ${previous.collateralVault}`);
-  console.log(`Existing GasVault:        ${previous.gasVault}`);
   console.log(`Existing DEX adapter:     ${previous.dexAdapter}`);
   console.log(`OrderFillVerifier:        ${orderFillVerifier}`);
   console.log(`DCAVerifier:              ${dcaVerifier}\n`);
@@ -239,7 +383,7 @@ async function main() {
     collateralVault = addressFromEnvOrDeployment(
       "COLLATERAL_VAULT_ADDRESS",
       "collateralVault",
-      previous,
+      previous
     );
     console.log(`Reusing CollateralVault:  ${collateralVault}`);
   } else {
@@ -248,28 +392,37 @@ async function main() {
     console.log(`  -> ${collateralVault}`);
   }
 
-  let gasVault = previous.gasVault;
-  if (skipGasVault) {
-    gasVault = addressFromEnvOrDeployment("GAS_VAULT_ADDRESS", "gasVault", previous);
-    console.log(`Reusing GasVault:         ${gasVault}`);
-  } else {
-    console.log("Deploying new GasVault...");
-    gasVault = await deployVault("GasVault");
-    console.log(`  -> ${gasVault}`);
-  }
-
   console.log("Deploying new CommitmentRegistry...");
   const RegistryF = await ethers.getContractFactory("CommitmentRegistry");
-  const registry = await RegistryF.deploy(gasVault, collateralVault, dexAdapter, guardian);
+  const registry = await RegistryF.deploy(
+    collateralVault,
+    dexAdapter,
+    guardian
+  );
   await registry.waitForDeployment();
   const commitmentRegistry = await registry.getAddress();
   console.log(`  -> ${commitmentRegistry}\n`);
 
-  await setVaultRegistry("CollateralVault", collateralVault, commitmentRegistry);
-  await setVaultRegistry("GasVault", gasVault, commitmentRegistry);
+  await setVaultRegistry(
+    "CollateralVault",
+    collateralVault,
+    commitmentRegistry
+  );
 
-  await setVerifierIfNeeded(registry, 0, orderFillVerifier, "Verifier ORDER_FILL");
+  await setVerifierIfNeeded(
+    registry,
+    0,
+    orderFillVerifier,
+    "Verifier ORDER_FILL"
+  );
   await setVerifierIfNeeded(registry, 1, dcaVerifier, "Verifier DCA");
+
+  await setProverIfNeeded(registry, prover);
+  await setFeeRatesIfNeeded(
+    registry,
+    prover.executorFeeBps,
+    prover.proverFeeBps
+  );
 
   for (const config of priceFeeds) {
     await setPriceFeedIfNeeded(registry, config);
@@ -281,11 +434,15 @@ async function main() {
     chainId,
     deployer: deployer.address,
     guardian,
+    proverId: prover.proverId,
+    proverPayout: prover.payout,
+    proverSigner: prover.signer,
+    executorFeeBps: prover.executorFeeBps,
+    proverFeeBps: prover.proverFeeBps,
     orderFillVerifier,
     dcaVerifier,
     commitmentRegistry,
     collateralVault,
-    gasVault,
     dexAdapter,
     deployedAt: new Date().toISOString(),
   };
@@ -294,13 +451,13 @@ async function main() {
 
   console.log(`\nUpdated ${path.relative(process.cwd(), file)}`);
   console.log("\nFrontend env:");
-  console.log(`  NEXT_PUBLIC_COMMITMENT_REGISTRY_ADDRESS=${commitmentRegistry}`);
+  console.log(
+    `  NEXT_PUBLIC_COMMITMENT_REGISTRY_ADDRESS=${commitmentRegistry}`
+  );
   console.log(`  NEXT_PUBLIC_COLLATERAL_VAULT_ADDRESS=${collateralVault}`);
-  console.log(`  NEXT_PUBLIC_GAS_VAULT_ADDRESS=${gasVault}`);
   console.log("\nKeeper env:");
   console.log(`  COMMITMENT_REGISTRY_ADDRESS=${commitmentRegistry}`);
   console.log(`  COLLATERAL_VAULT_ADDRESS=${collateralVault}`);
-  console.log(`  GAS_VAULT_ADDRESS=${gasVault}`);
   console.log(`  CHAIN_ID=${chainId}`);
 }
 
