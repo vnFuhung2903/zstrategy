@@ -1,0 +1,14 @@
+# Auto-provisioned Prometheus datasource. Grafana loads this on container
+# start, so the dashboard imports work out of the box without a manual setup
+# step.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
