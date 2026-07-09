@@ -1,27 +1,3 @@
-/**
- * Redeploy the bb-generated verifier contracts and rewire them on the existing
- * CommitmentRegistry — no other contracts touched.
- *
- * Use this when:
- *   - You ran `bb write_solidity` to regenerate OrderFillVerifier.sol /
- *     DCAVerifier.sol (e.g. because the prover-side bb.js was bumped and the
- *     on-chain VK no longer matches the new wire format).
- *   - You don't want to redeploy CommitmentRegistry, CollateralVault,
- *     or the DEX adapter — preserving on-chain commitments / collateral / gas
- *     tank balances and avoiding any frontend address rotation.
- *
- * Run with:
- *   npx hardhat run scripts/redeploy-verifiers.ts --network arbitrumSepolia
- *
- * The deployer must be the registry guardian — `setVerifier` is gated by
- * `onlyGuardian`. If guardian ≠ deployer, set `GUARDIAN_ADDRESS` and ensure
- * that signer is unlocked by hardhat (impersonation on forked nets, etc.).
- *
- * Selectively skip with:
- *   SKIP_ORDER_FILL=1   only redeploy DCAVerifier
- *   SKIP_DCA=1          only redeploy OrderFillVerifier
- */
-
 import { ethers, network } from "hardhat";
 import * as fs from "fs";
 import * as path from "path";
@@ -39,16 +15,12 @@ interface Deployment {
   commitmentRegistry: string;
   dexAdapter:         string;
   deployedAt:         string;
-  // Optional fields that may exist on older artifacts; preserved verbatim.
   [k: string]: unknown;
 }
 
 async function deployVerifier(
   label: "OrderFillVerifier" | "DCAVerifier",
 ): Promise<string> {
-  // bb externalises ZKTranscriptLib per-file. Each verifier needs its own
-  // library deployment + link — see deploy.ts and the OrderFillVerifier.sol
-  // top-of-file comment for the same pattern.
   const fileName = label === "OrderFillVerifier" ? "OrderFillVerifier" : "DCAVerifier";
   const LibF = await ethers.getContractFactory(
     `contracts/core/${fileName}.sol:ZKTranscriptLib`
@@ -69,7 +41,6 @@ async function main() {
   const [deployer] = await ethers.getSigners();
   const chainId = Number((await ethers.provider.getNetwork()).chainId);
 
-  // ── Load existing deployment artifact ─────────────────────────────────────
   const file = path.join(__dirname, "..", "deployments", `${network.name}.json`);
   if (!fs.existsSync(file)) {
     throw new Error(
@@ -92,18 +63,14 @@ async function main() {
   console.log(`Existing DCAVerifier:       ${prev.dcaVerifier}\n`);
 
   if (deployer.address.toLowerCase() !== prev.guardian.toLowerCase()) {
-    // setVerifier is onlyGuardian; bail loudly rather than letting the tx revert
-    // somewhere ambiguous after we've already burned gas on the verifier deploys.
     throw new Error(
       `Deployer (${deployer.address}) is not the registry guardian ` +
       `(${prev.guardian}). Either switch signers or rotate the guardian first.`,
     );
   }
 
-  // ── Connect to the live registry ──────────────────────────────────────────
   const registry = await ethers.getContractAt("CommitmentRegistry", prev.commitmentRegistry);
 
-  // ── Redeploy + rewire ─────────────────────────────────────────────────────
   const skipOrderFill = process.env.SKIP_ORDER_FILL === "1";
   const skipDca       = process.env.SKIP_DCA === "1";
   if (skipOrderFill && skipDca) {
@@ -136,7 +103,6 @@ async function main() {
     console.log("Skipping DCAVerifier (SKIP_DCA=1)\n");
   }
 
-  // ── Persist updated artifact ──────────────────────────────────────────────
   const next: Deployment = {
     ...prev,
     orderFillVerifier: newOrderFill,

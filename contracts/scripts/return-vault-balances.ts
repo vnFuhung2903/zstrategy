@@ -1,24 +1,3 @@
-/**
- * Return a user's free collateral and prepaid gas before vault redeploy.
- *
- * Run with:
- *
- *   npx hardhat run scripts/return-vault-balances.ts --network arbitrumSepolia
- *
- * Optional env:
- *   COMMITMENT_REGISTRY_ADDRESS
- *   COLLATERAL_VAULT_ADDRESS
- *   GAS_VAULT_ADDRESS
- *   WITHDRAW_TOKENS=0xTokenA,0xTokenB
- *   EXPIRED_COMMITMENTS=0xHashA,0xHashB
- *   CANCEL_COMMITMENTS_FILE=./cancel-commitments.json
- *
- * CANCEL_COMMITMENTS_FILE format:
- * [
- *   { "commitmentHash": "0x...", "nullifier": "0x..." }
- * ]
- */
-
 import { ethers, network } from "hardhat";
 import * as fs from "fs";
 import * as path from "path";

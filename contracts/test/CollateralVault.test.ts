@@ -15,7 +15,7 @@ describe("CollateralVault", () => {
   let token: MockERC20;
   let vault: CollateralVault;
 
-  const DEPOSIT_AMOUNT = ethers.parseUnits("1000", 6); // 1000 USDC
+  const DEPOSIT_AMOUNT = ethers.parseUnits("1000", 6);
   const COMMITMENT = ethers.keccak256(ethers.toUtf8Bytes("commitment-1"));
 
   beforeEach(async () => {
@@ -28,12 +28,10 @@ describe("CollateralVault", () => {
     vault = (await VaultF.deploy()) as unknown as CollateralVault;
     await vault.connect(owner).setRegistry(registry.address);
 
-    // Mint and pre-approve for user
     await token.mint(user.address, DEPOSIT_AMOUNT * 10n);
     await token.connect(user).approve(await vault.getAddress(), DEPOSIT_AMOUNT * 10n);
   });
 
-  // ── deposit ────────────────────────────────────────────────────────────
 
   describe("deposit", () => {
     it("increases freeBalance and emits Deposited", async () => {
@@ -53,13 +51,11 @@ describe("CollateralVault", () => {
     it("reverts if allowance insufficient", async () => {
       const freshToken = (await (await ethers.getContractFactory("MockERC20")).deploy("T", "T", 18)) as unknown as MockERC20;
       await freshToken.mint(user.address, DEPOSIT_AMOUNT);
-      // no approval
       await expect(vault.connect(user).deposit(await freshToken.getAddress(), DEPOSIT_AMOUNT))
         .to.be.reverted;
     });
   });
 
-  // ── withdraw ───────────────────────────────────────────────────────────
 
   describe("withdraw", () => {
     beforeEach(async () => {
@@ -79,7 +75,6 @@ describe("CollateralVault", () => {
     });
   });
 
-  // ── lockCollateral ─────────────────────────────────────────────────────
 
   describe("lockCollateral", () => {
     beforeEach(async () => {
@@ -112,7 +107,6 @@ describe("CollateralVault", () => {
     });
   });
 
-  // ── releaseForExecution ────────────────────────────────────────────────
 
   describe("releaseForExecution", () => {
     beforeEach(async () => {
@@ -146,7 +140,6 @@ describe("CollateralVault", () => {
     });
   });
 
-  // ── returnCollateral ───────────────────────────────────────────────────
 
   describe("returnCollateral", () => {
     beforeEach(async () => {

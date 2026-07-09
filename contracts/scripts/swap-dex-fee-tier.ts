@@ -1,22 +1,3 @@
-/**
- * Redeploy UniswapV3Adapter pointed at a different fee tier and swap it in via
- * registry.setDEXAdapter. Use when the originally-configured tier turns out to
- * have insufficient pool liquidity (run diagnose-uniswap.ts to confirm).
- *
- * On Arbitrum Sepolia for USDC/WETH, the tier-500 pool is dead (~88k L) while
- * the tier-3000 pool has well over 30T L — switching tiers fixes the empty-
- * data revert from executeCommitment without touching anything else.
- *
- *   FEE_TIER=3000 npx hardhat run scripts/swap-dex-fee-tier.ts --network arbitrumSepolia
- *
- * Env (all optional except FEE_TIER):
- *   FEE_TIER                Required. Uniswap V3 fee tier — 100, 500, 3000, 10000.
- *   SWAP_DEADLINE_BUFFER    Seconds after block.timestamp for the swap deadline.
- *                           Defaults to the same 300 used by the main deploy script.
- *   UNISWAP_ROUTER_ADDRESS  Override the router. Defaults to whatever the
- *                           currently-deployed adapter reports via .router().
- */
-
 import { ethers, network } from "hardhat";
 import { Contract } from "ethers";
 import * as fs from "fs";
@@ -51,8 +32,6 @@ async function main() {
     throw new Error(`FEE_TIER must be one of {100, 500, 3000, 10000}, got ${feeTier}.`);
   }
 
-  // Pull the router from the existing adapter unless overridden. Keeps the
-  // V3 deployment address stable across this swap — only the fee tier moves.
   const adapterAbi = ["function router() external view returns (address)"];
   const oldAdapter = new Contract(prev.dexAdapter, adapterAbi, ethers.provider);
   let routerAddr: string;
@@ -88,9 +67,6 @@ async function main() {
   await (await registry.setDEXAdapter(newAdapterAddr)).wait();
   console.log(`  ✓`);
 
-  // Preserve the old adapter address under a versioned key so we can revert if
-  // the new tier also turns out to be problematic (less likely, but cheap to
-  // keep around).
   const next = {
     ...prev,
     dexAdapter:         newAdapterAddr,

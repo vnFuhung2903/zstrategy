@@ -1,44 +1,3 @@
-/**
- * Swap the on-chain verifier(s) to MockVerifier — for thesis-demo
- * bring-up only, while the upstream bb UltraKeccakZK Solidity-codegen bug is
- * open:
- *   https://forum.aztec.network/t/sumcheck-fail-in-ultrahonk/8112
- *
- * Symptom: bb.js's prover and bb.js's own verifier accept proofs, but the
- * `bb write_solidity`-emitted UltraKeccakZK verifier reverts them with
- * non-deterministic codes (ShpleminiFailed / SumcheckFailed / empty-data
- * revert from the EC precompile path). Confirmed at bb 5.0.0-nightly.20260324
- * paired with Noir 1.0.0-beta.20 — the Aztec-published pair.
- *
- * Workaround: replace the on-chain verifier with MockVerifier, which
- * returns true only when `tx.origin` is in its allowlist. The keeper's
- * `backend.verifyProof(...)` in zk/orderFill.ts and zk/dca.ts is the actual
- * integrity check; the keeper now throws (refusing to submit) if that returns
- * FAIL. The mock's allowlist substitutes for the cryptographic caller-binding
- * that the real verifier would provide, preventing griefers from collecting
- * the 1.2× keeper-gas premium by triggering victim strategies.
- *
- * SECURITY (demo mode): trustlessness is replaced by "trust the configured
- * keeper EOA(s) + trust the keeper's off-chain verifyProof check." Self-
- * execute via the frontend is disabled by this swap unless you also allowlist
- * the user EOA — leave it off for the demo, switch back to the real verifier
- * for any production rehearsal.
- *
- * Required env:
- *   KEEPER_ADDRESS    EOA(s) to allowlist as tx.origin for verify().
- *                     Comma-separated for multi-keeper setups. The keeper's
- *                     EOA is the one derived from KEEPER_PRIVATE_KEY in
- *                     keeper/.env — derive it via `cast wallet address` or
- *                     read the address from the keeper startup logs.
- *
- * Run with:
- *   KEEPER_ADDRESS=0x... npx hardhat run scripts/swap-to-mock-verifier.ts --network arbitrumSepolia
- *
- * Selectively skip a kind with:
- *   SKIP_ORDER_FILL=1   only swap DCA
- *   SKIP_DCA=1          only swap ORDER_FILL
- */
-
 import { ethers, network } from "hardhat";
 import * as fs from "fs";
 import * as path from "path";
@@ -84,8 +43,6 @@ async function main() {
     );
   }
 
-  // One mock instance covers both kinds: verify() ignores its (bytes, bytes32[])
-  // inputs and returns true iff tx.origin is in the allowlist.
   const MockF = await ethers.getContractFactory("MockVerifier");
   const mock = await MockF.deploy();
   await mock.waitForDeployment();
@@ -116,8 +73,6 @@ async function main() {
     console.log("Skipping DCA (SKIP_DCA=1)");
   }
 
-  // Persist the mock address alongside the (untouched) real verifier addresses
-  // so we can revert with one setVerifier call when bb upstream is fixed.
   const next = {
     ...prev,
     mockVerifier:    mockAddr,

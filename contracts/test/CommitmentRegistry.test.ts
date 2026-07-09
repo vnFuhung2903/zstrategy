@@ -23,25 +23,25 @@ describe("CommitmentRegistry", () => {
   let tokenOut: MockERC20;
   let verifier: MockZKVerifier;
   let dexAdapter: MockDEXAdapter;
-  let feedIn:  MockChainlinkAggregator;   // tokenIn (USDC) / USD
-  let feedOut: MockChainlinkAggregator;   // tokenOut (WETH) / USD
+  let feedIn:  MockChainlinkAggregator;
+  let feedOut: MockChainlinkAggregator;
   let vault: CollateralVault;
   let registry: CommitmentRegistry;
 
-  const SIZE    = ethers.parseUnits("100", 6);   // 100 USDC
+  const SIZE    = ethers.parseUnits("100", 6);
   const MIN_OUT = ethers.parseUnits("0.03", 18);
   const DEX_OUT = ethers.parseUnits("0.033", 18);
-  const PROOF   = "0x" + "ab".repeat(256);       // dummy — verifier is mocked
+  const PROOF   = "0x" + "ab".repeat(256);
   const FEED_DEC        = 8;
-  const USDC_USD_ANSWER = 1_00000000n;           // $1.00 with 8 decimals
-  const WETH_USD_ANSWER = 2900_00000000n;        // $2900 with 8 decimals
+  const USDC_USD_ANSWER = 1_00000000n;
+  const WETH_USD_ANSWER = 2900_00000000n;
   // Derived price = floor(normIn * 10^8 / normOut)
   //   normIn  = 1e8  * 1e10 = 1e18
   //   normOut = 2900e8 * 1e10 = 2.9e21
   //   price   = 1e26 / 2.9e21 = 34482
   const DERIVED_PRICE   = 34482n;
-  const ORDER_FILL  = 0;                         // CommitmentKind.ORDER_FILL
-  const DCA         = 1;                         // CommitmentKind.DCA
+  const ORDER_FILL  = 0;
+  const DCA         = 1;
   const PROVER_ID   = ethers.keccak256(ethers.toUtf8Bytes("simulated-nitro-local"));
 
   let commitmentHash: string;
@@ -65,10 +65,6 @@ describe("CommitmentRegistry", () => {
     feedIn  = (await FeedF.deploy(FEED_DEC, USDC_USD_ANSWER)) as unknown as MockChainlinkAggregator;
     feedOut = (await FeedF.deploy(FEED_DEC, WETH_USD_ANSWER)) as unknown as MockChainlinkAggregator;
 
-    // Break circular dependency: vault ← registry ← vault
-    //   1. Deploy vault (no constructor arg needed now)
-    //   2. Deploy registry pointing at vault
-    //   3. Call vault.setRegistry(registry)
     const VaultF = await ethers.getContractFactory("CollateralVault");
     vault = (await VaultF.deploy()) as unknown as CollateralVault;
 
@@ -86,10 +82,8 @@ describe("CommitmentRegistry", () => {
     await registry.connect(guardian).setPriceFeed(await tokenOut.getAddress(), await feedOut.getAddress());
     await registry.connect(guardian).setProver(PROVER_ID, proverPayout.address, proverSigner.address, true);
 
-    // Seed dexAdapter with tokenOut (output side of swaps)
     await tokenOut.mint(await dexAdapter.getAddress(), ethers.parseUnits("1000", 18));
 
-    // Mint tokenIn for user and approve vault
     await tokenIn.mint(user.address, SIZE * 100n);
     await tokenIn.connect(user).approve(await vault.getAddress(), SIZE * 100n);
 
@@ -169,7 +163,6 @@ describe("CommitmentRegistry", () => {
     return registry.connect(caller).executeCommitment(hash, spentNullifier, proof, fillRef, receipt);
   }
 
-  // ── registerCommitment ─────────────────────────────────────────────────
 
   describe("registerCommitment", () => {
     it("stores commitment as PENDING", async () => {
@@ -177,7 +170,7 @@ describe("CommitmentRegistry", () => {
       const record = await registry.getCommitment(commitmentHash);
       expect(record.owner).to.equal(user.address);
       expect(record.size).to.equal(SIZE);
-      expect(record.status).to.equal(1); // PENDING
+      expect(record.status).to.equal(1);
     });
 
     it("emits CommitmentRegistered", async () => {
@@ -281,19 +274,16 @@ describe("CommitmentRegistry", () => {
     });
   });
 
-  // ── executeCommitment ──────────────────────────────────────────────────
 
   describe("executeCommitment", () => {
     beforeEach(async () => {
       await registerOne();
-      // Seed dexAdapter with extra tokenIn so the balance check in MockDEXAdapter passes
-      // (vault.releaseForExecution sends tokenIn to dexAdapter before swap() is called)
       await tokenIn.mint(await dexAdapter.getAddress(), SIZE);
     });
 
     it("executes with valid proof and marks EXECUTED", async () => {
       await execute();
-      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(2); // EXECUTED
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(2);
     });
 
     it("emits CommitmentExecuted", async () => {
@@ -353,7 +343,7 @@ describe("CommitmentRegistry", () => {
       await dexAdapter.setMockAmountOut(MIN_OUT - 1n);
 
       await expect(execute()).to.be.revertedWith("Registry: gross amount below minOut");
-      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1); // PENDING
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1);
       expect(await registry.nullifiers(nullifier)).to.be.false;
     });
 
@@ -471,7 +461,7 @@ describe("CommitmentRegistry", () => {
         execute()
       ).to.be.revertedWith("MockDEX: swap disabled");
 
-      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1); // PENDING
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1);
       expect(await registry.nullifiers(nullifier)).to.be.false;
       expect(await vault.lockedBalance(commitmentHash, await tokenIn.getAddress())).to.equal(SIZE);
     });
@@ -485,7 +475,7 @@ describe("CommitmentRegistry", () => {
         execute()
       ).to.be.revertedWith("MockDEX: post-transfer failure");
 
-      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1); // PENDING
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1);
       expect(await registry.nullifiers(nullifier)).to.be.false;
       expect(await vault.lockedBalance(commitmentHash, await tokenIn.getAddress())).to.equal(SIZE);
       expect(await tokenOut.balanceOf(user.address)).to.equal(userTokenOutBefore);
@@ -530,7 +520,7 @@ describe("CommitmentRegistry", () => {
     });
 
     it("self-execution: user can execute without keeper", async () => {
-      await tokenIn.mint(await dexAdapter.getAddress(), SIZE); // extra for this test
+      await tokenIn.mint(await dexAdapter.getAddress(), SIZE);
       await expect(
         execute(commitmentHash, nullifier, PROOF, 0, ORDER_FILL, user)
       ).to.emit(registry, "CommitmentExecuted");
@@ -568,7 +558,7 @@ describe("CommitmentRegistry", () => {
     it("reverts on oracle answer that overflows uint64", async () => {
       // Set feedOut to $1 so derived price == feedIn.answer; then feedIn = 2^64 overflows uint64.
       await feedOut.setAnswer(100000000n);
-      await feedIn.setAnswer(BigInt("18446744073709551616")); // 2^64
+      await feedIn.setAnswer(BigInt("18446744073709551616"));
       await expect(
         execute()
       ).to.be.revertedWith("Registry: oracle price overflow");
@@ -620,14 +610,13 @@ describe("CommitmentRegistry", () => {
     });
   });
 
-  // ── cancelCommitment ───────────────────────────────────────────────────
 
   describe("cancelCommitment", () => {
     beforeEach(registerOne);
 
     it("cancels and returns collateral to free balance", async () => {
       await registry.connect(user).cancelCommitment(commitmentHash, nullifier);
-      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(3); // CANCELLED
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(3);
       expect(await vault.freeBalance(user.address, await tokenIn.getAddress())).to.equal(SIZE);
     });
 
@@ -664,7 +653,6 @@ describe("CommitmentRegistry", () => {
     });
   });
 
-  // ── sweepExpired ───────────────────────────────────────────────────────
 
   describe("sweepExpired", () => {
     beforeEach(registerOne);
@@ -672,7 +660,7 @@ describe("CommitmentRegistry", () => {
     it("expires commitment and returns collateral", async () => {
       await time.increaseTo(expiry + 1);
       await registry.connect(other).sweepExpired([commitmentHash]);
-      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(4); // EXPIRED
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(4);
       expect(await vault.freeBalance(user.address, await tokenIn.getAddress())).to.equal(SIZE);
     });
 
@@ -685,20 +673,19 @@ describe("CommitmentRegistry", () => {
 
     it("silently skips non-expired commitments", async () => {
       await registry.connect(other).sweepExpired([commitmentHash]);
-      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1); // still PENDING
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(1);
     });
 
     it("silently skips already-cancelled commitments", async () => {
       await registry.connect(user).cancelCommitment(commitmentHash, nullifier);
       await time.increaseTo(expiry + 1);
       await registry.connect(other).sweepExpired([commitmentHash]);
-      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(3); // still CANCELLED
+      expect(await registry.getCommitmentStatus(commitmentHash)).to.equal(3);
     });
 
     it("can sweep multiple in one call", async () => {
       const h2 = ethers.keccak256(ethers.toUtf8Bytes("commitment-2"));
       await vault.connect(user).deposit(await tokenIn.getAddress(), SIZE);
-      // Use same expiry so both expire at the same time
       await registry.connect(user).registerCommitment(
         h2, await tokenIn.getAddress(), await tokenOut.getAddress(), SIZE, MIN_OUT, expiry, ORDER_FILL
       );
@@ -711,7 +698,6 @@ describe("CommitmentRegistry", () => {
     });
   });
 
-  // ── registerCommitmentBatch ────────────────────────────────────────────
 
   describe("registerCommitmentBatch", () => {
     it("registers multiple commitments atomically", async () => {
@@ -738,7 +724,7 @@ describe("CommitmentRegistry", () => {
       ).to.emit(registry, "CommitmentRegistered");
 
       for (const h of hashes) {
-        expect(await registry.getCommitmentStatus(h)).to.equal(1); // PENDING
+        expect(await registry.getCommitmentStatus(h)).to.equal(1);
       }
     });
 
@@ -766,7 +752,7 @@ describe("CommitmentRegistry", () => {
           [ethers.keccak256(ethers.toUtf8Bytes("x"))],
           await tokenIn.getAddress(),
           await tokenOut.getAddress(),
-          [SIZE, SIZE], // wrong length
+          [SIZE, SIZE],
           [MIN_OUT],
           [expiry],
           ORDER_FILL
