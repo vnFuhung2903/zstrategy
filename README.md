@@ -22,7 +22,7 @@ The current demo goal is to show that:
 - public executors can submit execution tickets without seeing private witness data;
 - the smart contract remains the settlement trust root.
 
-This is a thesis/demo system, not a production system. The local simulated TEE does not provide hardware isolation.
+This is a thesis/demo system, not a production system. The simulated Nitro-style prover boundary does not provide hardware isolation.
 
 ## Problem Statement
 
@@ -40,10 +40,10 @@ zstrategy reduces this leakage by committing to private witness data and proving
 Current scope:
 
 - Private limit orders.
-- Private market orders using the same order-fill circuit with sentinel prices.
+- Private buy-side and sell-side market orders using the same order-fill circuit with sentinel prices.
 - Private DCA rounds with non-overlap checks and off-chain same-group proof locking.
 - Encrypted witness packages.
-- Simulated Nitro-style TEE/prover boundary: a local software boundary that imitates the data flow and interface of an AWS Nitro Enclave design, but is not a deployed AWS Nitro Enclave and does not provide hardware isolation.
+- Simulated Nitro-style prover boundary: a local software boundary that imitates the data flow and interface of an AWS Nitro Enclave design, but is not a deployed AWS Nitro Enclave and does not provide hardware isolation.
 - Public execution ticket queue, claim endpoint, frontend executor route, and standalone CLI executor.
 - On-chain settlement through `CommitmentRegistry`, `CollateralVault`, verifier contracts, and a DEX adapter.
 - Output-token executor/prover fees from gross swap output.
@@ -65,7 +65,8 @@ Out of current scope:
 ```text
 Browser
   - builds private intent witness locally
-  - derives per-intent user_secret from wallet signature
+  - derives order user_secret from the order nonce and wallet signature
+  - derives one DCA-batch user_secret from a separate shared nonce and reuses it with round-specific nonces
   - computes commitment and nullifier
   - verifies simulated enclave attestation
   - encrypts witness package to the enclave key
@@ -73,7 +74,7 @@ Browser
   - posts public metadata plus encrypted package to backend
 
 Backend
-  - accepts v2 intent registration routes
+  - accepts intent registration routes
   - stores pending_intents with public metadata and encrypted witness package
   - indexes registry events
   - schedules enclave evaluation
@@ -81,7 +82,7 @@ Backend
   - exposes public ticket list and claim endpoints
   - runs claim-time eth_call simulation before returning a claimed ticket
 
-Simulated TEE prover
+Simulated Nitro-style prover
   - owns the witness decryption key
   - returns simulated attestation reports
   - imports encrypted witness packages
@@ -98,7 +99,7 @@ Public executor
 Smart contracts
   - store commitments
   - verify prover receipts and ZK proofs
-  - read Chainlink price feeds for order fills
+  - read Chainlink-compatible price feeds for order fills
   - freshness-check DCA fillRef
   - swap collateral through the DEX adapter
   - distribute output-token fees and user proceeds
@@ -116,9 +117,9 @@ Current responsibilities:
 - Wallet integration through wagmi and viem.
 - Client-side commitment generation.
 - Local encrypted witness package creation.
-- Simulated enclave attestation verification through the backend attestation route.
+- Simulated enclave attestation verification through the backend attestation route; independent root-key pinning is used when `NEXT_PUBLIC_ENCLAVE_ROOT_PUBLIC_KEY_PEM` is configured.
 - Local IndexedDB metadata for user-owned intents.
-- Encrypted local backup/import UI for user-owned intent metadata.
+- Encrypted local backup/import UI for locally stored order-intent metadata.
 - Backend registration calls after on-chain commitment confirmation.
 - User-visible retry for backend sync failures after successful wallet transactions.
 
@@ -141,7 +142,7 @@ Current responsibilities:
 - HTTP API using Gin.
 - PostgreSQL persistence through GORM.
 - Chain indexing and execution stats.
-- v2 intent relay and scheduler.
+- Intent relay and scheduler.
 - Enclave package import/evaluation orchestration.
 - Ticket publication, leasing, claim simulation, stale-ticket reset, and terminal-state cleanup.
 - Prometheus metrics.
@@ -232,7 +233,7 @@ Current contract responsibilities:
 ## Intent Lifecycle
 
 1. The user builds an intent in the browser.
-2. The browser derives a per-intent `user_secret` from a wallet signature over an `intentId`.
+2. For an order, the browser derives `user_secret` from a wallet signature over an `intentId` built with the order nonce. For a DCA batch, it derives one `user_secret` using a separate shared nonce and reuses that secret with distinct round nonces.
 3. The browser computes the commitment hash and nullifier.
 4. The browser verifies simulated enclave attestation.
 5. The browser encrypts the witness package to the attested enclave public key.
@@ -261,7 +262,7 @@ Execution condition:
 - BUY: oracle pair price must be less than or equal to the private price.
 - SELL: oracle pair price must be greater than or equal to the private price.
 
-ORDER_FILL tickets use `fillRef = "0"` because the registry reads Chainlink itself at execution time.
+ORDER_FILL tickets use `fillRef = "0"` because the registry reads the configured Chainlink-compatible feeds at execution time.
 
 ### Market Order
 
@@ -276,21 +277,25 @@ Sentinel private prices:
 
 These sentinels make the order-fill condition trivially satisfiable while preserving the same proof and settlement path. Market orders use a short expiry so unfilled demo orders do not linger indefinitely.
 
+Buy-side and sell-side market creation are usable through the current frontend. Submission validation rejects a zero price for limit orders but permits the intentional zero-price sentinel used by sell-side market orders.
+
 ### DCA
 
 Status: Current.
 
 DCA creates multiple independent DCA commitments, one per round. Each round has its own nonce, nullifier, scheduled window, expiry, and encrypted witness package.
 
+The browser derives one `user_secret` for the DCA batch from a separate shared nonce. That secret is reused with each round's distinct nonce when computing the round commitment and nullifier.
+
 Current DCA protections:
 
 - frontend rejects overlapping windows for a group before signing and registration;
 - enclave rejects overlapping same-group windows before proof generation;
 - backend stores only an opaque `dcaGroupLockId`, not raw `dcaGroupId`;
-- scheduler prevents concurrent proof jobs for the same `dcaGroupLockId` inside one backend process;
-- public executor ticket responses do not expose raw group IDs, lock IDs, private windows, nonces, nullifiers, or witness packages.
+- scheduler prevents concurrent proof jobs for the same `dcaGroupLockId` within one running backend instance;
+- public executor ticket responses do not expose raw group IDs, lock IDs, private windows, round nonces, `user_secret`, or witness packages; the execution nullifier is included in a ready ticket because the registry requires it.
 
-The backend DCA lock is off-chain and in-process. Strict on-chain round ordering is future work.
+The backend DCA coordination is off-chain and limited to one running backend/prover instance. Strict on-chain round ordering is future work.
 
 ## ZK Proof Model
 
@@ -318,7 +323,7 @@ Public input layout shared by current tickets:
 [7] expiry
 ```
 
-For ORDER_FILL, the submitted ticket uses `fillRef = 0`, and the registry replaces it with the live Chainlink-derived pair price before proof verification.
+For ORDER_FILL, the submitted ticket uses `fillRef = 0`, and the registry replaces it with the latest reported Chainlink-compatible pair price before proof verification. The current testnet-oriented contract does not enforce its configured oracle-staleness limit.
 
 For DCA, `fillRef` is the proven execution timestamp. The registry requires it to be not in the future and recent enough relative to the block timestamp.
 
@@ -331,7 +336,7 @@ Circuit artifact notes:
 - Regenerating Solidity verifiers from Barretenberg output may require manually renaming the final generated verifier contract to match the file (`OrderFillVerifier` or `DCAVerifier`) and linking `ZKTranscriptLib`.
 - Circuit compilation and Barretenberg verifier generation are easiest from a Linux or WSL shell.
 
-## Simulated Nitro-Style TEE Model
+## Simulated Nitro-Style Prover Model
 
 Status: Current as a local simulation.
 
@@ -340,8 +345,9 @@ The simulated enclave imitates the Nitro-style boundary:
 - the enclave owns a recipient key;
 - attestation binds nonce, image digest, PCR-like values, and enclave public key;
 - the browser verifies the report before encrypting the witness package;
-- only the enclave package decrypts witness ciphertext;
-- backend and executors treat witness packages as opaque bytes.
+- only the simulated prover service decrypts witness ciphertext;
+- the backend validates public package metadata and AAD while treating ciphertext as opaque;
+- public executors do not receive witness packages or plaintext witness fields.
 
 This does not claim real hardware isolation. Real AWS Nitro Enclave integration is future work.
 
@@ -411,7 +417,7 @@ Settlement steps:
    - unexpired ticket;
    - EIP-712 signature over commitment hash, nullifier, proof hash, submitted fillRef, ticket expiry, commitment kind, and prover ID.
 3. Build verifier public inputs.
-4. For ORDER_FILL, require submitted `fillRef == 0` and read the live Chainlink pair price.
+4. For ORDER_FILL, require submitted `fillRef == 0` and read the latest reported Chainlink-compatible pair price; oracle-staleness enforcement is currently disabled in the testnet-oriented contract.
 5. For DCA, validate submitted `fillRef` freshness.
 6. Verify the UltraHonk proof.
 7. Mark nullifier spent and commitment executed before external calls.
@@ -425,13 +431,13 @@ Fee model:
 - Public executors pay gas upfront.
 - Executor and prover are paid from gross output tokens.
 - Fee bps are registry settings with caps.
-- No active gas-reimbursement vault is used by current v2 public execution.
+- No active gas-reimbursement vault is used by the current public execution flow.
 
 ## Privacy And Security Model
 
 Current privacy claims:
 
-- Backend does not store plaintext v2 witness fields.
+- Backend does not store plaintext witness fields. It validates public package metadata and AAD while storing ciphertext without decrypting it.
 - Public executors do not receive witness packages or private witness fields.
 - Chain observers do not see private limit price, DCA windows, nonce, or `user_secret`.
 - The contract verifies settlement validity independently of the backend, executor, and enclave host.
@@ -452,7 +458,7 @@ Public or revealed information:
 Security boundaries:
 
 - Smart contracts are the settlement trust root.
-- Simulated enclave is trusted for demo privacy but not hardware-isolated.
+- The simulated Nitro-style prover boundary is trusted for demo privacy but is not hardware-isolated.
 - Backend is trusted for availability and scheduling, not for settlement correctness.
 - Executors are untrusted transaction submitters.
 - Oracle data is read by the registry at fill time for ORDER_FILL.
@@ -465,7 +471,7 @@ Known security limitations:
 - Claim simulation can race the next block or another executor transaction.
 - Backend ticket list is eventually consistent with chain indexing.
 - ORDER_FILL tickets can become stale if oracle prices move between proof generation, claim simulation, and mined execution.
-- DCA same-group locking is in-process only.
+- DCA same-group coordination is not shared across multiple backend/prover instances.
 - Registration endpoints need production-grade anti-spam and ownership hardening before public production use.
 - Browser-local metadata recovery after a post-confirmation backend sync failure is not fully productized.
 
@@ -479,7 +485,7 @@ Known security limitations:
 | Executor CLI | TypeScript, Node.js, ethers |
 | Contracts | Solidity, Hardhat, OpenZeppelin |
 | Circuits | Noir, Barretenberg, UltraHonk |
-| Oracle | Chainlink feeds configured in `CommitmentRegistry.priceFeeds` |
+| Oracle | Chainlink-compatible feeds configured through `CommitmentRegistry.priceFeeds` |
 | DEX | Adapter interface with Uniswap adapters |
 | Metrics | Prometheus and Grafana |
 | Demo chain | Arbitrum Sepolia |
@@ -583,11 +589,14 @@ Those files are secondary setup references. For current architecture and thesis 
 
 - The simulated enclave is not real hardware isolation.
 - Real AWS Nitro Enclave deployment is not implemented.
+- Independent frontend trust in the simulated attestation root requires `NEXT_PUBLIC_ENCLAVE_ROOT_PUBLIC_KEY_PEM`; without it, the expected root key is supplied through the backend response.
+- Frontend order and DCA registration currently use `minOut = 0`; the order page's displayed slippage selection does not currently affect the committed minimum output.
+- The registry reads the latest reported Chainlink-compatible answers, but its configured oracle-staleness checks are currently disabled for the testnet-oriented flow.
 - Public executor tickets are not cryptographically bound to one executor.
 - Backend leases are short coordination hints, not settlement authority.
 - `GET /api/v1/executor/tickets` is backend-ready only; claim performs fresher simulation.
 - Ticket execution can still fail after claim due to oracle movement, chain state changes, gas issues, or competing executors.
-- DCA group locking is process-local and does not protect multi-replica deployments.
+- DCA same-group coordination works only within one running backend/prover instance and is not shared across multiple replicas.
 - DCA strict on-chain ordering is not implemented.
 - Private-mempool or Flashbots Protect routing is not implemented; any UI label should be treated as non-functional until a real transaction path exists.
 - Backend sync retry exists for the active page session, but full recovery after reload requires more product work.
@@ -606,7 +615,7 @@ Future work only; do not describe these as current behavior:
 - Grid trading.
 - Copy trading.
 - Multi-chain production deployment.
-- Production recovery flows for encrypted witness backup and backend sync retries.
+- Production recovery flows for encrypted order-intent metadata backup and backend sync retries.
 - Stronger API abuse controls, rate limits, and ownership proofs.
 - Formal audits and production security hardening.
 
