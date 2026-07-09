@@ -35,11 +35,9 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
-  const buffer = u8.buffer;
-  if (buffer instanceof SharedArrayBuffer) {
-    throw new Error("SharedArrayBuffer cannot be converted to a standard ArrayBuffer without copying.");
-  }
-  return buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+  const copy = new Uint8Array(u8.byteLength);
+  copy.set(u8);
+  return copy.buffer;
 }
 
 async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
