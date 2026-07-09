@@ -9,6 +9,5 @@
   "collateralVault": "0x3a073E64C8bb0A56E6d9722d8A3fabD6Fe921660",
   "commitmentRegistry": "0x54005b7d0143216012f21b5E7897433Bc5aA1c45",
   "dexAdapter": "0xF3F75a92c8A96f72F27BA7A55c647dA8F8aE5889",
-  "mockVerifier": "0x6770b5D99De58cA5041745a470a8F1c9Ba2873eC",
   "deployedAt": "2026-06-07T06:59:17.694Z"
 }
